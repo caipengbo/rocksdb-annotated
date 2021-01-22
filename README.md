@@ -1,9 +1,12 @@
-## RocksDB: A Persistent Key-Value Store for Flash and RAM Storage
+# RocksDB-Annotated
 
-[![CircleCI Status](https://circleci.com/gh/facebook/rocksdb.svg?style=svg)](https://circleci.com/gh/facebook/rocksdb)
-[![TravisCI Status](https://travis-ci.org/facebook/rocksdb.svg?branch=master)](https://travis-ci.org/facebook/rocksdb)
-[![Appveyor Build status](https://ci.appveyor.com/api/projects/status/fbgfu0so3afcno78/branch/master?svg=true)](https://ci.appveyor.com/project/Facebook/rocksdb/branch/master)
-[![PPC64le Build Status](http://140-211-168-68-openstack.osuosl.org:8080/buildStatus/icon?job=rocksdb&style=plastic)](http://140-211-168-68-openstack.osuosl.org:8080/job/rocksdb)
+Add my Chinese comments on RocksDB source code, You can read my [leveldb-annotated](https://github.com/caipengbo/leveldb-annotated) first!
+
+- RocksDB Version: 6.15.2
+- Branch: master
+- commit: 2d37830e44e015503ec6d553e2a3b651ddbc3c44
+
+## RocksDB: A Persistent Key-Value Store for Flash and RAM Storage
 
 RocksDB is developed and maintained by Facebook Database Engineering Team.
 It is built on earlier work on [LevelDB](https://github.com/google/leveldb) by Sanjay Ghemawat (sanjay@google.com)
@@ -26,7 +29,3 @@ rely on the details of any other header files in this package.  Those
 internal APIs may be changed without warning.
 
 Design discussions are conducted in https://www.facebook.com/groups/rocksdb.dev/ and https://rocksdb.slack.com/
-
-## License
-
-RocksDB is dual-licensed under both the GPLv2 (found in the COPYING file in the root directory) and Apache 2.0 License (found in the LICENSE.Apache file in the root directory).  You may select, at your option, one of the above-listed licenses.

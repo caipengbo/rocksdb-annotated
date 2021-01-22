@@ -156,10 +156,13 @@ class FilePicker {
 
   int GetCurrentLevel() const { return curr_level_; }
 
+  // 遍历所有的level,然后再遍历每个level的所有的文件
   FdWithKeyRange* GetNextFile() {
     while (!search_ended_) {  // Loops over different levels.
+
       while (curr_index_in_curr_level_ < curr_file_level_->num_files) {
         // Loops over all files in current level.
+        // 遍历每一层的所有文件
         FdWithKeyRange* f = &curr_file_level_->files[curr_index_in_curr_level_];
         hit_file_level_ = curr_level_;
         is_hit_file_last_in_level_ =
@@ -193,6 +196,7 @@ class FilePicker {
           // Setup file search bound for the next level based on the
           // comparison results
           if (curr_level_ > 0) {
+            // 根据当前level的比较结果来计算下一个level需要二分查找的文件范围
             file_indexer_->GetNextLevelIndex(curr_level_,
                                             curr_index_in_curr_level_,
                                             cmp_smallest, cmp_largest,
@@ -1875,6 +1879,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
   bool is_blob_index = false;
   bool* const is_blob_to_use = is_blob ? is_blob : &is_blob_index;
 
+  // 根据文件元数据查找key
   GetContext get_context(
       user_comparator(), merge_operator_, info_log_, db_statistics_,
       status->ok() ? GetContext::kNotFound : GetContext::kMerge, user_key,
@@ -1887,11 +1892,12 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
   if (merge_operator_) {
     pinned_iters_mgr.StartPinning();
   }
-
+  // 根据传递进来的Key选择对应的文件
   FilePicker fp(
       storage_info_.files_, user_key, ikey, &storage_info_.level_files_brief_,
       storage_info_.num_non_empty_levels_, &storage_info_.file_indexer_,
       user_comparator(), internal_comparator());
+  // 会遍历所有的level,然后再遍历每个level的所有的文件
   FdWithKeyRange* f = fp.GetNextFile();
 
   while (f != nullptr) {

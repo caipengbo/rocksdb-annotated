@@ -28,7 +28,7 @@ int main() {
   options.create_if_missing = true;
 
   // open DB
-  Status s = DB::Open(options, kDBPath, &db);
+  Status s = DB::Open(options, kDBPath, &db);  // 其中会创建DB的实现类 DBImpl
   assert(s.ok());
 
   // Put key-value

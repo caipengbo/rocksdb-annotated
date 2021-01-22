@@ -1449,6 +1449,7 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
                 std::vector<ColumnFamilyHandle*>* handles, DB** dbptr) {
   const bool kSeqPerBatch = true;
   const bool kBatchPerTxn = true;
+  // DBImpl是 DB 的默认实现
   return DBImpl::Open(db_options, dbname, column_families, handles, dbptr,
                       !kSeqPerBatch, kBatchPerTxn);
 }

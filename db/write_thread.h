@@ -26,6 +26,9 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+// WriteThread 是对于 leveldb并发写的一个封装+优化，
+// leveldb中这块的逻辑比较简短，所以都写在了DBImpl中，线程的等待 Con_Wait 在 DBImpl::Write中
+// 但是rocksdb这块的逻辑较复杂，涉及到很多优化和并发写，所以专门拿了出来，封装在 WriteThread 中
 class WriteThread {
  public:
   enum State : uint8_t {
@@ -75,6 +78,7 @@ class WriteThread {
   struct Writer;
 
   struct WriteGroup {
+    // Writer 链表
     Writer* leader = nullptr;
     Writer* last_writer = nullptr;
     SequenceNumber last_sequence;
@@ -132,6 +136,7 @@ class WriteThread {
 
     std::aligned_storage<sizeof(std::mutex)>::type state_mutex_bytes;
     std::aligned_storage<sizeof(std::condition_variable)>::type state_cv_bytes;
+    // 以下两个指针将 Write串成双向链表
     Writer* link_older;  // read/write only before linking, or as leader
     Writer* link_newer;  // lazy, read/write only before linking, or as leader
 
@@ -262,7 +267,7 @@ class WriteThread {
   // for correctness. All of the methods except JoinBatchGroup and
   // EnterUnbatched may be called either with or without the db mutex held.
   // Correctness is maintained by ensuring that only a single thread is
-  // a leader at a time.
+  // a leader at a time. 在同一时间仅有一个线程是 Leader
 
   // Registers w as ready to become part of a batch group, waits until the
   // caller should perform some work, and returns the current state of the

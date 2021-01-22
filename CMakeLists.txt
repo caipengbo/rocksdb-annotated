@@ -1350,7 +1350,7 @@ if(WITH_TOOLS)
     DEPENDS ${tool_deps})
 endif()
 
-option(WITH_EXAMPLES "build with examples" OFF)
+option(WITH_EXAMPLES "build with examples" ON)
 if(WITH_EXAMPLES)
   add_subdirectory(examples)
 endif()

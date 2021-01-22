@@ -384,6 +384,7 @@ bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
 }
 #endif  // ROCKSDB_LITE
 
+// 这里row cache就是对当前的所需要查找的key在当前sst中对应的value进行cache
 Status TableCache::Get(const ReadOptions& options,
                        const InternalKeyComparator& internal_comparator,
                        const FileMetaData& file_meta, const Slice& k,
@@ -416,6 +417,7 @@ Status TableCache::Get(const ReadOptions& options,
   if (!done) {
     assert(s.ok());
     if (t == nullptr) {
+      //
       s = FindTable(options, file_options_, internal_comparator, fd, &handle,
                     prefix_extractor,
                     options.read_tier == kBlockCacheTier /* no_io */,
@@ -456,6 +458,7 @@ Status TableCache::Get(const ReadOptions& options,
     size_t charge =
         row_cache_key.Size() + row_cache_entry->size() + sizeof(std::string);
     void* row_ptr = new std::string(std::move(*row_cache_entry));
+    // 插入 Cache
     // If row cache is full, it's OK to continue.
     ioptions_.row_cache
         ->Insert(row_cache_key.GetUserKey(), row_ptr, charge,

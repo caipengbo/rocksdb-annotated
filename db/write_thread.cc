@@ -221,6 +221,8 @@ void WriteThread::SetState(Writer* w, uint8_t new_state) {
   }
 }
 
+// 该函数是用的无锁链表实现了链表里面的Add语意，同时由于第一个加入链表的线程(Leader)
+// newest_writer == nullptr所以有 return (writers == nullptr)的返回值
 bool WriteThread::LinkOne(Writer* w, std::atomic<Writer*>* newest_writer) {
   assert(newest_writer != nullptr);
   assert(w->state == STATE_INIT);
@@ -302,7 +304,7 @@ WriteThread::Writer* WriteThread::FindNextLeader(Writer* from,
   }
   return current;
 }
-
+// 选出下一个主，就是接下来的第一个Write
 void WriteThread::CompleteLeader(WriteGroup& write_group) {
   assert(write_group.size > 0);
   Writer* leader = write_group.leader;
@@ -377,10 +379,17 @@ void WriteThread::EndWriteStall() {
 }
 
 static WriteThread::AdaptationContext jbg_ctx("JoinBatchGroup");
+
+// 将当前这个Writer w加入到WriteThread的Writer链表中，
+// 当w通过JoinBatchGroup之后会自动被设置一个状态state，
+// 如果当前writer是第一个进入WriteThread的writer，则成为当前Group的leader，
+// 状态被设置为WriteThread::STATE_GROUP_LEADER，否则说明已经有了一个leader，
+// 则等待leader为当前的writer设置状态（AwaitState）
 void WriteThread::JoinBatchGroup(Writer* w) {
   TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:Start", w);
   assert(w->batch != nullptr);
 
+  // 将 w 追加到newest_writer_链表上，返回值可以判断 w 是否可以称为Leader
   bool linked_as_leader = LinkOne(w, &newest_writer_);
 
   if (linked_as_leader) {
@@ -404,6 +413,7 @@ void WriteThread::JoinBatchGroup(Writer* w) {
      *      writes in parallel.
      */
     TEST_SYNC_POINT_CALLBACK("WriteThread::JoinBatchGroup:BeganWaiting", w);
+    // 如果不是 Leader, 当前线程 等待
     AwaitState(w, STATE_GROUP_LEADER | STATE_MEMTABLE_WRITER_LEADER |
                       STATE_PARALLEL_MEMTABLE_WRITER | STATE_COMPLETED,
                &jbg_ctx);
@@ -411,6 +421,7 @@ void WriteThread::JoinBatchGroup(Writer* w) {
   }
 }
 
+// 当前Leader将符合条件的 write 加入到 write_group 中
 size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
                                             WriteGroup* write_group) {
   assert(leader->link_older == nullptr);
@@ -444,6 +455,7 @@ size_t WriteThread::EnterAsBatchGroupLeader(Writer* leader,
   // Tricky. Iteration start (leader) is exclusive and finish
   // (newest_writer) is inclusive. Iteration goes from old to new.
   Writer* w = leader;
+  // 遍历write链表，选择 合适的 Write
   while (w != newest_writer) {
     assert(w->link_newer);
     w = w->link_newer;
@@ -584,6 +596,7 @@ void WriteThread::ExitAsMemTableWriter(Writer* /*self*/,
   SetState(leader, STATE_COMPLETED);
 }
 
+// 将此次写入中的所有Follower线程的状态置成 STATE_PARALLEL_MEMTABLE_WRITER，让他们都参与并发写
 void WriteThread::LaunchParallelMemTableWriters(WriteGroup* write_group) {
   assert(write_group != nullptr);
   write_group->running.store(write_group->size);
@@ -626,6 +639,7 @@ void WriteThread::ExitAsBatchGroupFollower(Writer* w) {
 }
 
 static WriteThread::AdaptationContext eabgl_ctx("ExitAsBatchGroupLeader");
+// 如果当前的链表上还有后续写入的Batch，直接选出来下一个主，并且将此次写入的小组成员状态全都置成STATE_COMPLETED。结束本次写入
 void WriteThread::ExitAsBatchGroupLeader(WriteGroup& write_group,
                                          Status& status) {
   Writer* leader = write_group.leader;

@@ -571,7 +571,7 @@ Status WriteBatchInternal::Iterate(const WriteBatch* wb,
       last_was_try_again = true;
       s = Status::OK();
     }
-
+    // 根据tag(kType)确定不同写入数据的不同操作
     switch (tag) {
       case kTypeColumnFamilyValue:
       case kTypeValue:
@@ -2097,6 +2097,7 @@ Status WriteBatchInternal::InsertInto(
       batch_per_txn, hint_per_batch);
   SetSequence(writer->batch, sequence);
   inserter.set_log_number_ref(writer->log_ref);
+  // 写入 Memtable
   Status s = writer->batch->Iterate(&inserter);
   assert(!seq_per_batch || batch_cnt != 0);
   assert(!seq_per_batch || inserter.sequence() - sequence == batch_cnt);

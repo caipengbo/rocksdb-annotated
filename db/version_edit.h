@@ -98,6 +98,7 @@ extern uint64_t PackFileNumberAndPathId(uint64_t number, uint64_t path_id);
 // file number and size, which can be used to create a new table reader for it.
 // The behavior is undefined when a copied of the structure is used when the
 // file is not in any live version any more.
+//
 struct FileDescriptor {
   // Table reader in table_reader_handle
   TableReader* table_reader;

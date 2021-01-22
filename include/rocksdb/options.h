@@ -1458,6 +1458,7 @@ struct WriteOptions {
   // (they were dropped),  ignore the write (don't return an error). If there
   // are multiple writes in a WriteBatch, other writes will succeed.
   // Default: false
+  // 如果CF不存在，那么写入会被ignore
   bool ignore_missing_column_families;
 
   // If true and we need to wait or sleep for the write request, fails

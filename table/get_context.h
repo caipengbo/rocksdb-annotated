@@ -61,6 +61,7 @@ struct GetContextStats {
 // repeatedly in case of merge operands. In case the key may exist with
 // high probability, but IO is required to confirm and the user doesn't allow
 // it, MarkKeyMayExist() must be called instead of SaveValue().
+// 保存 点查询（也就是查找一个key）的上下文
 class GetContext {
  public:
   // Current state of the point lookup. All except kNotFound and kMerge are

@@ -1783,6 +1783,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   }
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
+    // 在SSTable中查询
     sv->current->Get(
         read_options, lkey, get_impl_options.value, timestamp, &s,
         &merge_context, &max_covering_tombstone_seq,
