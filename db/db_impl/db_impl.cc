@@ -2581,6 +2581,9 @@ Status DBImpl::CreateColumnFamilies(
   return s;
 }
 
+// 创建CF
+// CreateColumnFamilyImpl -> LogAndApply -> ProcessManifestWrites
+// -> VersionSet::CreateColumnFamily -> ColumnFamilySet::CreateColumnFamily
 Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
                                       const std::string& column_family_name,
                                       ColumnFamilyHandle** handle) {
@@ -2612,6 +2615,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
     }
     VersionEdit edit;
     edit.AddColumnFamily(column_family_name);
+    // 创建当前CF的ID（自增）
     uint32_t new_id = versions_->GetColumnFamilySet()->GetNextColumnFamilyID();
     edit.SetColumnFamily(new_id);
     edit.SetLogNumber(logfile_number_);
@@ -2624,6 +2628,7 @@ Status DBImpl::CreateColumnFamilyImpl(const ColumnFamilyOptions& cf_options,
       write_thread_.EnterUnbatched(&w, &mutex_);
       // LogAndApply will both write the creation in MANIFEST and create
       // ColumnFamilyData object
+      // 内部创建 CFD
       s = versions_->LogAndApply(nullptr, MutableCFOptions(cf_options), &edit,
                                  &mutex_, directories_.GetDbDir(), false,
                                  &cf_options);

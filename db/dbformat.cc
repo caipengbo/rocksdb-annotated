@@ -129,11 +129,12 @@ const char* InternalKeyComparator::Name() const {
   return name_.c_str();
 }
 
+// InternalKey的排序规则
 int InternalKeyComparator::Compare(const ParsedInternalKey& a,
                                    const ParsedInternalKey& b) const {
   // Order by:
   //    increasing user key (according to user-supplied comparator)
-  //    decreasing sequence number
+  //    decreasing sequence number 大seq是最新数据
   //    decreasing type (though sequence# should be enough to disambiguate)
   int r = user_comparator_.Compare(a.user_key, b.user_key);
   if (r == 0) {

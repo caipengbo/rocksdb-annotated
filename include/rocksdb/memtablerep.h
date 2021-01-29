@@ -53,6 +53,7 @@ typedef void* KeyHandle;
 
 extern Slice GetLengthPrefixedSlice(const char* data);
 
+// 用来抽象不同的 MemTable 的实现
 class MemTableRep {
  public:
   // KeyComparator provides a means to compare keys, which are internal keys

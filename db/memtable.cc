@@ -62,7 +62,7 @@ ImmutableMemTableOptions::ImmutableMemTableOptions(
       allow_data_in_errors(ioptions.allow_data_in_errors) {}
 
 MemTable::MemTable(const InternalKeyComparator& cmp,
-                   const ImmutableCFOptions& ioptions,
+                   const ImmutableCFOptions&   ioptions,
                    const MutableCFOptions& mutable_cf_options,
                    WriteBufferManager* write_buffer_manager,
                    SequenceNumber latest_seq, uint32_t column_family_id)
@@ -852,6 +852,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
     if (bloom_filter_) {
       PERF_COUNTER_ADD(bloom_memtable_hit_count, 1);
     }
+    // 从 MemTable 中获取
     GetFromTable(key, *max_covering_tombstone_seq, do_merge, callback,
                  is_blob_index, value, timestamp, s, merge_context, seq,
                  &found_final_value, &merge_in_progress);
@@ -872,6 +873,7 @@ void MemTable::GetFromTable(const LookupKey& key,
                             std::string* timestamp, Status* s,
                             MergeContext* merge_context, SequenceNumber* seq,
                             bool* found_final_value, bool* merge_in_progress) {
+  // 构建Saver（SaveValue函数的参数）
   Saver saver;
   saver.status = s;
   saver.found_final_value = found_final_value;

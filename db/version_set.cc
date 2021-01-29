@@ -114,6 +114,7 @@ Status OverlapWithIterator(const Comparator* ucmp,
 // levels. Therefore we are guaranteed that if we find data
 // in a smaller level, later levels are irrelevant (unless we
 // are MergeInProgress).
+// 根据传递进来的key来选择对应的sstable文件
 class FilePicker {
  public:
   FilePicker(std::vector<FileMetaData*>* files, const Slice& user_key,
@@ -156,7 +157,7 @@ class FilePicker {
 
   int GetCurrentLevel() const { return curr_level_; }
 
-  // 遍历所有的level,然后再遍历每个level的所有的文件
+  // 遍历所有的level, 然后再遍历每个level的所有的文件
   FdWithKeyRange* GetNextFile() {
     while (!search_ended_) {  // Loops over different levels.
 
@@ -1914,6 +1915,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         GetPerfLevel() >= PerfLevel::kEnableTimeExceptForMutex &&
         get_perf_context()->per_level_perf_context_enabled;
     StopWatchNano timer(env_, timer_enabled /* auto_start */);
+    // 从 Table Cache 中查找
     *status = table_cache_->Get(
         read_options, *internal_comparator(), *f->file_metadata, ikey,
         &get_context, mutable_cf_options_.prefix_extractor.get(),
@@ -3874,6 +3876,9 @@ void VersionSet::AppendVersion(ColumnFamilyData* column_family_data,
   v->next_->prev_ = v;
 }
 
+// 巨长一函数
+// 调用 VersionSet::CreateColumnFamily 创建 CF
+// 调用 	ColumnFamilyData::SetDropped() 删除 CF
 Status VersionSet::ProcessManifestWrites(
     std::deque<ManifestWriter>& writers, InstrumentedMutex* mu,
     FSDirectory* db_directory, bool new_descriptor_log,
@@ -4245,9 +4250,12 @@ Status VersionSet::ProcessManifestWrites(
     if (first_writer.edit_list.front()->is_column_family_add_) {
       assert(batch_edits.size() == 1);
       assert(new_cf_options != nullptr);
+      // 创建CF
       CreateColumnFamily(*new_cf_options, first_writer.edit_list.front());
     } else if (first_writer.edit_list.front()->is_column_family_drop_) {
       assert(batch_edits.size() == 1);
+      // 删除 CF
+      // SetDropped -> ColumnFamilySet::RemoveColumnFamily
       first_writer.cfd->SetDropped();
       first_writer.cfd->UnrefAndTryDelete();
     } else {

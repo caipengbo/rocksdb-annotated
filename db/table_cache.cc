@@ -93,7 +93,7 @@ TableReader* TableCache::GetTableReaderFromHandle(Cache::Handle* handle) {
 void TableCache::ReleaseHandle(Cache::Handle* handle) {
   cache_->Release(handle);
 }
-
+// 根据配置的不同的sst格式来调用不同的reader
 Status TableCache::GetTableReader(
     const ReadOptions& ro, const FileOptions& file_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
@@ -131,6 +131,7 @@ Status TableCache::GetTableReader(
             std::move(file), fname, ioptions_.env, io_tracer_,
             record_read_stats ? ioptions_.statistics : nullptr, SST_READ_MICROS,
             file_read_hist, ioptions_.rate_limiter, ioptions_.listeners));
+    // 根据 Option的配置（不同的sstable，创建不同的Table reader）
     s = ioptions_.table_factory->NewTableReader(
         ro,
         TableReaderOptions(ioptions_, prefix_extractor, file_options,
@@ -180,6 +181,7 @@ Status TableCache::FindTable(const ReadOptions& ro,
     }
 
     std::unique_ptr<TableReader> table_reader;
+    // 获得 table_reader
     Status s = GetTableReader(
         ro, file_options, internal_comparator, fd, false /* sequential mode */,
         record_read_stats, file_read_hist, &table_reader, prefix_extractor,
@@ -191,6 +193,7 @@ Status TableCache::FindTable(const ReadOptions& ro,
       // We do not cache error results so that if the error is transient,
       // or somebody repairs the file, we recover automatically.
     } else {
+      // 更新 Cache
       s = cache_->Insert(key, table_reader.get(), 1, &DeleteEntry<TableReader>,
                          handle);
       if (s.ok()) {
@@ -384,6 +387,7 @@ bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
 }
 #endif  // ROCKSDB_LITE
 
+// 1. row cache 中查找  未找到：2. table cache查找  3. 读取value，缓存到row cache
 // 这里row cache就是对当前的所需要查找的key在当前sst中对应的value进行cache
 Status TableCache::Get(const ReadOptions& options,
                        const InternalKeyComparator& internal_comparator,
@@ -417,7 +421,7 @@ Status TableCache::Get(const ReadOptions& options,
   if (!done) {
     assert(s.ok());
     if (t == nullptr) {
-      //
+      // 先从Cache中查找，找不到再从 sst 文件中查找（并缓存到Cache中）
       s = FindTable(options, file_options_, internal_comparator, fd, &handle,
                     prefix_extractor,
                     options.read_tier == kBlockCacheTier /* no_io */,
@@ -425,6 +429,7 @@ Status TableCache::Get(const ReadOptions& options,
                     level, true /* prefetch_index_and_filter_in_cache */,
                     max_file_size_for_l0_meta_pin);
       if (s.ok()) {
+        // 读取出 table_reader
         t = GetTableReaderFromHandle(handle);
       }
     }
@@ -442,6 +447,7 @@ Status TableCache::Get(const ReadOptions& options,
     }
     if (s.ok()) {
       get_context->SetReplayLog(row_cache_entry);  // nullptr if no cache.
+      // 从 table_reader 中读取数据
       s = t->Get(options, k, get_context, prefix_extractor, skip_filters);
       get_context->SetReplayLog(nullptr);
     } else if (options.read_tier == kBlockCacheTier && s.IsIncomplete()) {
