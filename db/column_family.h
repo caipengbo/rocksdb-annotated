@@ -265,10 +265,11 @@ class ColumnFamilySet;
 
 // This class keeps all the data that a column family needs.
 // Most methods require DB mutex held, unless otherwise noted
+// Column Family对应的
 class ColumnFamilyData {
  public:
   ~ColumnFamilyData();
-
+  // Id 和 Name
   // thread-safe
   uint32_t GetID() const { return id_; }
   // thread-safe
@@ -522,7 +523,7 @@ class ColumnFamilyData {
   ThreadLocalPtr* TEST_GetLocalSV() { return local_sv_.get(); }
 
  private:
-  friend class ColumnFamilySet;
+  friend class ColumnFamilySet;  // CreateColumnFamily(调用构造函数ColumnFamilyData)
   static const uint32_t kDummyColumnFamilyDataId;
   ColumnFamilyData(uint32_t id, const std::string& name,
                    Version* dummy_versions, Cache* table_cache,
@@ -536,8 +537,10 @@ class ColumnFamilyData {
 
   std::vector<std::string> GetDbPaths() const;
 
+  // id - name
   uint32_t id_;
   const std::string name_;
+  // 当前 Column Family对应的所有Version（链表）
   Version* dummy_versions_;  // Head of circular doubly-linked list of versions.
   Version* current_;         // == dummy_versions->prev_
 
@@ -562,6 +565,7 @@ class ColumnFamilyData {
 
   WriteBufferManager* write_buffer_manager_;
 
+  // 当前 Column Family 的 Memtable 和 Immutable Memtable
   MemTable* mem_;
   MemTableList imm_;
   SuperVersion* super_version_;
@@ -637,6 +641,7 @@ class ColumnFamilyData {
 // * GetColumnFamily() -- either inside of DB mutex or from a write thread
 // * GetNextColumnFamilyID(), GetMaxColumnFamily(), UpdateMaxColumnFamily(),
 // NumberOfColumnFamilies -- inside of DB mutex
+// 管理 Column Family
 class ColumnFamilySet {
  public:
   // ColumnFamilySet supports iteration
@@ -715,11 +720,12 @@ class ColumnFamilySet {
   // * when reading, at least one condition needs to be satisfied:
   // 1. DB mutex locked
   // 2. accessed from a single-threaded write thread
-  std::unordered_map<std::string, uint32_t> column_families_;
-  std::unordered_map<uint32_t, ColumnFamilyData*> column_family_data_;
+
+  std::unordered_map<std::string, uint32_t> column_families_;  // name - id
+  std::unordered_map<uint32_t, ColumnFamilyData*> column_family_data_;  // id - cfd
 
   uint32_t max_column_family_;
-  ColumnFamilyData* dummy_cfd_;
+  ColumnFamilyData* dummy_cfd_;  //
   // We don't hold the refcount here, since default column family always exists
   // We are also not responsible for cleaning up default_cfd_cache_. This is
   // just a cache that makes common case (accessing default column family)
