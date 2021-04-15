@@ -8,10 +8,10 @@
 #include "utilities/persistent_cache/persistent_cache_tier.h"
 
 #include <cinttypes>
-#include <sstream>
 #include <string>
+#include <sstream>
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 std::string PersistentCacheConfig::ToString() const {
   std::string ret;
@@ -99,10 +99,6 @@ PersistentCache::StatsType PersistentCacheTier::Stats() {
   return PersistentCache::StatsType{};
 }
 
-uint64_t PersistentCacheTier::NewId() {
-  return last_id_.fetch_add(1, std::memory_order_relaxed);
-}
-
 //
 // PersistentTieredCache implementation
 //
@@ -162,6 +158,6 @@ bool PersistentTieredCache::IsCompressed() {
   return tiers_.front()->IsCompressed();
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif

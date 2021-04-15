@@ -10,8 +10,9 @@
 #include "utilities/cassandra/serialize.h"
 #include "utilities/cassandra/test_utils.h"
 
+using namespace rocksdb::cassandra;
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace cassandra {
 
 TEST(ColumnTest, Column) {
@@ -183,8 +184,6 @@ TEST(TombstoneTest, Tombstone) {
       == 0);
 }
 
-class RowValueTest : public testing::Test {};
-
 TEST(RowValueTest, RowTombstone) {
   int32_t local_deletion_time = 1494022807;
   int64_t marked_for_delete_at = 1494022807044;
@@ -328,13 +327,10 @@ TEST(RowValueTest, PurgeTtlShouldRemvoeAllColumnsExpired) {
   bool changed = false;
   auto purged = row_value.RemoveExpiredColumns(&changed);
   EXPECT_TRUE(changed);
-  EXPECT_EQ(purged.get_columns().size(), 3);
-  VerifyRowValueColumns(purged.get_columns(), 0, kColumn, 0,
-                        ToMicroSeconds(now));
-  VerifyRowValueColumns(purged.get_columns(), 1, kExpiringColumn, 2,
-                        ToMicroSeconds(now));
-  VerifyRowValueColumns(purged.get_columns(), 2, kTombstone, 3,
-                        ToMicroSeconds(now));
+  EXPECT_EQ(purged.columns_.size(), 3);
+  VerifyRowValueColumns(purged.columns_, 0, kColumn, 0, ToMicroSeconds(now));
+  VerifyRowValueColumns(purged.columns_, 1, kExpiringColumn, 2, ToMicroSeconds(now));
+  VerifyRowValueColumns(purged.columns_, 2, kTombstone, 3, ToMicroSeconds(now));
 
   purged.RemoveExpiredColumns(&changed);
   EXPECT_FALSE(changed);
@@ -353,21 +349,17 @@ TEST(RowValueTest, ExpireTtlShouldConvertExpiredColumnsToTombstones) {
   bool changed = false;
   auto compacted = row_value.ConvertExpiredColumnsToTombstones(&changed);
   EXPECT_TRUE(changed);
-  EXPECT_EQ(compacted.get_columns().size(), 4);
-  VerifyRowValueColumns(compacted.get_columns(), 0, kColumn, 0,
-                        ToMicroSeconds(now));
-  VerifyRowValueColumns(compacted.get_columns(), 1, kTombstone, 1,
-                        ToMicroSeconds(now - 10));
-  VerifyRowValueColumns(compacted.get_columns(), 2, kExpiringColumn, 2,
-                        ToMicroSeconds(now));
-  VerifyRowValueColumns(compacted.get_columns(), 3, kTombstone, 3,
-                        ToMicroSeconds(now));
+  EXPECT_EQ(compacted.columns_.size(), 4);
+  VerifyRowValueColumns(compacted.columns_, 0, kColumn, 0, ToMicroSeconds(now));
+  VerifyRowValueColumns(compacted.columns_, 1, kTombstone, 1, ToMicroSeconds(now - 10));
+  VerifyRowValueColumns(compacted.columns_, 2, kExpiringColumn, 2, ToMicroSeconds(now));
+  VerifyRowValueColumns(compacted.columns_, 3, kTombstone, 3, ToMicroSeconds(now));
 
   compacted.ConvertExpiredColumnsToTombstones(&changed);
   EXPECT_FALSE(changed);
 }
 } // namespace cassandra
-}  // namespace ROCKSDB_NAMESPACE
+} // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

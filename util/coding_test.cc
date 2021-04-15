@@ -11,7 +11,7 @@
 
 #include "test_util/testharness.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Coding { };
 TEST(Coding, Fixed16) {
@@ -161,7 +161,7 @@ TEST(Coding, Varint32Truncation) {
   std::string s;
   PutVarint32(&s, large_value);
   uint32_t result;
-  for (unsigned int len = 0; len + 1 < s.size(); len++) {
+  for (unsigned int len = 0; len < s.size() - 1; len++) {
     ASSERT_TRUE(GetVarint32Ptr(s.data(), s.data() + len, &result) == nullptr);
   }
   ASSERT_TRUE(
@@ -181,7 +181,7 @@ TEST(Coding, Varint64Truncation) {
   std::string s;
   PutVarint64(&s, large_value);
   uint64_t result;
-  for (unsigned int len = 0; len + 1 < s.size(); len++) {
+  for (unsigned int len = 0; len < s.size() - 1; len++) {
     ASSERT_TRUE(GetVarint64Ptr(s.data(), s.data() + len, &result) == nullptr);
   }
   ASSERT_TRUE(
@@ -209,7 +209,7 @@ TEST(Coding, Strings) {
   ASSERT_EQ("", input.ToString());
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

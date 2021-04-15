@@ -8,14 +8,14 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "db/dbformat.h"
 
-#include <stdio.h>
 #include <cinttypes>
+#include <stdio.h>
 #include "monitoring/perf_context_imp.h"
 #include "port/port.h"
 #include "util/coding.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // kValueTypeForSeek defines the ValueType that should be passed when
 // constructing a ParsedInternalKey object for seeking to a particular
@@ -23,8 +23,14 @@ namespace ROCKSDB_NAMESPACE {
 // and the value type is embedded as the low 8 bits in the sequence
 // number in internal keys, we need to use the highest-numbered
 // ValueType, not the lowest).
-const ValueType kValueTypeForSeek = kTypeDeletionWithTimestamp;
+const ValueType kValueTypeForSeek = kTypeBlobIndex;
 const ValueType kValueTypeForSeekForPrev = kTypeDeletion;
+
+uint64_t PackSequenceAndType(uint64_t seq, ValueType t) {
+  assert(seq <= kMaxSequenceNumber);
+  assert(IsExtendedValueType(t));
+  return (seq << 8) | t;
+}
 
 EntryType GetEntryType(ValueType value_type) {
   switch (value_type) {
@@ -32,8 +38,6 @@ EntryType GetEntryType(ValueType value_type) {
       return kEntryPut;
     case kTypeDeletion:
       return kEntryDelete;
-    case kTypeDeletionWithTimestamp:
-      return kEntryDeleteWithTimestamp;
     case kTypeSingleDeletion:
       return kEntrySingleDelete;
     case kTypeMerge:
@@ -49,8 +53,7 @@ EntryType GetEntryType(ValueType value_type) {
 
 bool ParseFullKey(const Slice& internal_key, FullKey* fkey) {
   ParsedInternalKey ikey;
-  if (!ParseInternalKey(internal_key, &ikey, false /*log_err_key */)
-           .ok()) {  // TODO
+  if (!ParseInternalKey(internal_key, &ikey)) {
     return false;
   }
   fkey->user_key = ikey.user_key;
@@ -59,17 +62,16 @@ bool ParseFullKey(const Slice& internal_key, FullKey* fkey) {
   return true;
 }
 
-void AppendInternalKey(std::string* result, const ParsedInternalKey& key) {
-  result->append(key.user_key.data(), key.user_key.size());
-  PutFixed64(result, PackSequenceAndType(key.sequence, key.type));
+void UnPackSequenceAndType(uint64_t packed, uint64_t* seq, ValueType* t) {
+  *seq = packed >> 8;
+  *t = static_cast<ValueType>(packed & 0xff);
+
+  assert(*seq <= kMaxSequenceNumber);
+  assert(IsExtendedValueType(*t));
 }
 
-void AppendInternalKeyWithDifferentTimestamp(std::string* result,
-                                             const ParsedInternalKey& key,
-                                             const Slice& ts) {
-  assert(key.user_key.size() >= ts.size());
-  result->append(key.user_key.data(), key.user_key.size() - ts.size());
-  result->append(ts.data(), ts.size());
+void AppendInternalKey(std::string* result, const ParsedInternalKey& key) {
+  result->append(key.user_key.data(), key.user_key.size());
   PutFixed64(result, PackSequenceAndType(key.sequence, key.type));
 }
 
@@ -78,34 +80,12 @@ void AppendInternalKeyFooter(std::string* result, SequenceNumber s,
   PutFixed64(result, PackSequenceAndType(s, t));
 }
 
-void AppendKeyWithMinTimestamp(std::string* result, const Slice& key,
-                               size_t ts_sz) {
-  assert(ts_sz > 0);
-  const std::string kTsMin(ts_sz, static_cast<unsigned char>(0));
-  result->append(key.data(), key.size());
-  result->append(kTsMin.data(), ts_sz);
-}
-
-void AppendKeyWithMaxTimestamp(std::string* result, const Slice& key,
-                               size_t ts_sz) {
-  assert(ts_sz > 0);
-  const std::string kTsMax(ts_sz, static_cast<unsigned char>(0xff));
-  result->append(key.data(), key.size());
-  result->append(kTsMax.data(), ts_sz);
-}
-
-std::string ParsedInternalKey::DebugString(bool log_err_key, bool hex) const {
-  std::string result = "'";
-  if (log_err_key) {
-    result += user_key.ToString(hex);
-  } else {
-    result += "<redacted>";
-  }
-
+std::string ParsedInternalKey::DebugString(bool hex) const {
   char buf[50];
   snprintf(buf, sizeof(buf), "' seq:%" PRIu64 ", type:%d", sequence,
            static_cast<int>(type));
-
+  std::string result = "'";
+  result += user_key.ToString(hex);
   result += buf;
   return result;
 }
@@ -113,8 +93,8 @@ std::string ParsedInternalKey::DebugString(bool log_err_key, bool hex) const {
 std::string InternalKey::DebugString(bool hex) const {
   std::string result;
   ParsedInternalKey parsed;
-  if (ParseInternalKey(rep_, &parsed, false /* log_err_key */).ok()) {
-    result = parsed.DebugString(true /* log_err_key */, hex);  // TODO
+  if (ParseInternalKey(rep_, &parsed)) {
+    result = parsed.DebugString(hex);
   } else {
     result = "(bad)";
     result.append(EscapeString(rep_));
@@ -122,12 +102,7 @@ std::string InternalKey::DebugString(bool hex) const {
   return result;
 }
 
-const char* InternalKeyComparator::Name() const {
-  if (name_.empty()) {
-    return "rocksdb.anonymous.InternalKeyComparator";
-  }
-  return name_.c_str();
-}
+const char* InternalKeyComparator::Name() const { return name_.c_str(); }
 
 int InternalKeyComparator::Compare(const ParsedInternalKey& a,
                                    const ParsedInternalKey& b) const {
@@ -219,4 +194,4 @@ void IterKey::EnlargeBuffer(size_t key_size) {
   buf_ = new char[key_size];
   buf_size_ = key_size;
 }
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

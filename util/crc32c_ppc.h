@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 extern uint32_t crc32c_ppc(uint32_t crc, unsigned char const *buffer,
-                           size_t len);
+                           unsigned len);
 
 #ifdef __cplusplus
 }

@@ -440,12 +440,13 @@ public class ReadOptions extends RocksObject {
    * @param iterateLowerBound Slice representing the upper bound
    * @return the reference to the current ReadOptions.
    */
-  public ReadOptions setIterateLowerBound(final AbstractSlice<?> iterateLowerBound) {
+  public ReadOptions setIterateLowerBound(final Slice iterateLowerBound) {
     assert(isOwningHandle());
-    setIterateLowerBound(
-        nativeHandle_, iterateLowerBound == null ? 0 : iterateLowerBound.getNativeHandle());
-    // Hold onto a reference so it doesn't get garbage collected out from under us.
-    iterateLowerBoundSlice_ = iterateLowerBound;
+    if (iterateLowerBound != null) {
+      // Hold onto a reference so it doesn't get garbage collected out from under us.
+      iterateLowerBoundSlice_ = iterateLowerBound;
+      setIterateLowerBound(nativeHandle_, iterateLowerBoundSlice_.getNativeHandle());
+    }
     return this;
   }
 
@@ -475,7 +476,7 @@ public class ReadOptions extends RocksObject {
    *
    * The upper bound is exclusive i.e. the bound value is not a valid entry.
    *
-   * If prefix_extractor is not null, the Seek target and iterate_upper_bound
+   * If iterator_extractor is not null, the Seek target and iterate_upper_bound
    * need to have the same prefix. This is because ordering is not guaranteed
    * outside of prefix domain.
    *
@@ -484,12 +485,13 @@ public class ReadOptions extends RocksObject {
    * @param iterateUpperBound Slice representing the upper bound
    * @return the reference to the current ReadOptions.
    */
-  public ReadOptions setIterateUpperBound(final AbstractSlice<?> iterateUpperBound) {
+  public ReadOptions setIterateUpperBound(final Slice iterateUpperBound) {
     assert(isOwningHandle());
-    setIterateUpperBound(
-        nativeHandle_, iterateUpperBound == null ? 0 : iterateUpperBound.getNativeHandle());
-    // Hold onto a reference so it doesn't get garbage collected out from under us.
-    iterateUpperBoundSlice_ = iterateUpperBound;
+    if (iterateUpperBound != null) {
+      // Hold onto a reference so it doesn't get garbage collected out from under us.
+      iterateUpperBoundSlice_ = iterateUpperBound;
+      setIterateUpperBound(nativeHandle_, iterateUpperBoundSlice_.getNativeHandle());
+    }
     return this;
   }
 
@@ -568,8 +570,8 @@ public class ReadOptions extends RocksObject {
   // freely leave scope without us losing the Java Slice object, which during
   // close() would also reap its associated rocksdb::Slice native object since
   // it's possibly (likely) to be an owning handle.
-  private AbstractSlice<?> iterateLowerBoundSlice_;
-  private AbstractSlice<?> iterateUpperBoundSlice_;
+  private Slice iterateLowerBoundSlice_;
+  private Slice iterateUpperBoundSlice_;
 
   private native static long newReadOptions();
   private native static long newReadOptions(final boolean verifyChecksums,

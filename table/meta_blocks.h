@@ -20,7 +20,7 @@
 #include "table/format.h"
 #include "util/kv_map.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class BlockBuilder;
 class BlockHandle;
@@ -89,7 +89,7 @@ void NotifyCollectTableCollectorsOnBlockAdd(
     uint64_t blockRawBytes, uint64_t blockCompressedBytesFast,
     uint64_t blockCompressedBytesSlow);
 
-// NotifyCollectTableCollectorsOnFinish() triggers the `Finish` event for all
+// NotifyCollectTableCollectorsOnAdd() triggers the `Finish` event for all
 // property collectors. The collected properties will be added to `builder`.
 bool NotifyCollectTableCollectorsOnFinish(
     const std::vector<std::unique_ptr<IntTblPropCollector>>& collectors,
@@ -99,8 +99,7 @@ bool NotifyCollectTableCollectorsOnFinish(
 // @returns a status to indicate if the operation succeeded. On success,
 //          *table_properties will point to a heap-allocated TableProperties
 //          object, otherwise value of `table_properties` will not be modified.
-Status ReadProperties(const ReadOptions& ro, const Slice& handle_value,
-                      RandomAccessFileReader* file,
+Status ReadProperties(const Slice& handle_value, RandomAccessFileReader* file,
                       FilePrefetchBuffer* prefetch_buffer, const Footer& footer,
                       const ImmutableCFOptions& ioptions,
                       TableProperties** table_properties, bool verify_checksum,
@@ -122,8 +121,7 @@ Status ReadTableProperties(RandomAccessFileReader* file, uint64_t file_size,
                            const ImmutableCFOptions& ioptions,
                            TableProperties** properties,
                            bool compression_type_missing = false,
-                           MemoryAllocator* memory_allocator = nullptr,
-                           FilePrefetchBuffer* prefetch_buffer = nullptr);
+                           MemoryAllocator* memory_allocator = nullptr);
 
 // Find the meta block from the meta index block.
 Status FindMetaBlock(InternalIterator* meta_index_iter,
@@ -151,4 +149,4 @@ Status ReadMetaBlock(RandomAccessFileReader* file,
                      bool compression_type_missing = false,
                      MemoryAllocator* memory_allocator = nullptr);
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

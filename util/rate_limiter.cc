@@ -14,7 +14,7 @@
 #include "test_util/sync_point.h"
 #include "util/aligned_buffer.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 size_t RateLimiter::RequestToken(size_t bytes, size_t alignment,
                                  Env::IOPriority io_priority, Statistics* stats,
@@ -111,8 +111,7 @@ void GenericRateLimiter::Request(int64_t bytes, const Env::IOPriority pri,
     std::chrono::microseconds now(NowMicrosMonotonic(env_));
     if (now - tuned_time_ >=
         kRefillsPerTune * std::chrono::microseconds(refill_period_us_)) {
-      Status s = Tune();
-      s.PermitUncheckedError();  //**TODO: What to do on error?
+      Tune();
     }
   }
 
@@ -337,4 +336,4 @@ RateLimiter* NewGenericRateLimiter(
                                 mode, Env::Default(), auto_tuned);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

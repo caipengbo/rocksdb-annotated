@@ -11,23 +11,23 @@
 
 #pragma once
 
-#include <time.h>
 #include <atomic>
 #include <memory>
 #include "port/sys_time.h"
+#include <time.h>
 
-#include "file/writable_file_writer.h"
 #include "monitoring/iostats_context_imp.h"
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "test_util/sync_point.h"
+#include "util/file_reader_writer.h"
 #include "util/mutexlock.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class EnvLogger : public Logger {
  public:
-  EnvLogger(std::unique_ptr<FSWritableFile>&& writable_file,
+  EnvLogger(std::unique_ptr<WritableFile>&& writable_file,
             const std::string& fname, const EnvOptions& options, Env* env,
             InfoLogLevel log_level = InfoLogLevel::ERROR_LEVEL)
       : Logger(log_level),
@@ -39,7 +39,7 @@ class EnvLogger : public Logger {
   ~EnvLogger() {
     if (!closed_) {
       closed_ = true;
-      CloseHelper().PermitUncheckedError();
+      CloseHelper();
     }
   }
 
@@ -48,7 +48,7 @@ class EnvLogger : public Logger {
     mutex_.AssertHeld();
     if (flush_pending_) {
       flush_pending_ = false;
-      file_.Flush().PermitUncheckedError();
+      file_.Flush();
     }
     last_flush_micros_ = env_->NowMicros();
   }
@@ -134,7 +134,7 @@ class EnvLogger : public Logger {
       assert(p <= limit);
       mutex_.Lock();
       // We will ignore any error returned by Append().
-      file_.Append(Slice(base, p - base)).PermitUncheckedError();
+      file_.Append(Slice(base, p - base));
       flush_pending_ = true;
       const uint64_t now_micros = env_->NowMicros();
       if (now_micros - last_flush_micros_ >= flush_every_seconds_ * 1000000) {
@@ -162,4 +162,4 @@ class EnvLogger : public Logger {
   std::atomic<bool> flush_pending_;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

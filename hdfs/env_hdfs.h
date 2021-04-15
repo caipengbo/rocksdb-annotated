@@ -16,7 +16,7 @@
 #ifdef USE_HDFS
 #include <hdfs.h>
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // Thrown during execution when there is an issue with the supplied
 // arguments.
@@ -101,8 +101,6 @@ class HdfsEnv : public Env {
   Status NewLogger(const std::string& fname,
                    std::shared_ptr<Logger>* result) override;
 
-  Status IsDirectory(const std::string& path, bool* is_dir) override;
-
   void Schedule(void (*function)(void* arg), void* arg, Priority pri = LOW,
                 void* tag = nullptr,
                 void (*unschedFunction)(void* arg) = 0) override {
@@ -162,7 +160,10 @@ class HdfsEnv : public Env {
     return posixEnv->TimeToString(number);
   }
 
-  static uint64_t gettid() { return Env::Default()->GetThreadID(); }
+  static uint64_t gettid() {
+    assert(sizeof(pthread_t) <= sizeof(uint64_t));
+    return (uint64_t)pthread_self();
+  }
 
   uint64_t GetThreadID() const override { return HdfsEnv::gettid(); }
 
@@ -206,7 +207,8 @@ class HdfsEnv : public Env {
     std::string portStr = (rem == 0 ? remaining :
                            remaining.substr(0, rem));
 
-    tPort port = static_cast<tPort>(atoi(portStr.c_str()));
+    tPort port;
+    port = atoi(portStr.c_str());
     if (port == 0) {
       throw HdfsFatalException("Bad host-port for hdfs " + uri);
     }
@@ -228,11 +230,14 @@ class HdfsEnv : public Env {
   }
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #else // USE_HDFS
 
-namespace ROCKSDB_NAMESPACE {
+
+namespace rocksdb {
+
+static const Status notsup;
 
 class HdfsEnv : public Env {
 
@@ -254,81 +259,75 @@ class HdfsEnv : public Env {
       const std::string& /*fname*/,
       std::unique_ptr<RandomAccessFile>* /*result*/,
       const EnvOptions& /*options*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status NewWritableFile(const std::string& /*fname*/,
                                  std::unique_ptr<WritableFile>* /*result*/,
                                  const EnvOptions& /*options*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status NewDirectory(const std::string& /*name*/,
                               std::unique_ptr<Directory>* /*result*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status FileExists(const std::string& /*fname*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status GetChildren(const std::string& /*path*/,
                              std::vector<std::string>* /*result*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status DeleteFile(const std::string& /*fname*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status CreateDir(const std::string& /*name*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status CreateDirIfMissing(const std::string& /*name*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status DeleteDir(const std::string& /*name*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status GetFileSize(const std::string& /*fname*/,
                              uint64_t* /*size*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status GetFileModificationTime(const std::string& /*fname*/,
                                          uint64_t* /*time*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status RenameFile(const std::string& /*src*/,
                             const std::string& /*target*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status LinkFile(const std::string& /*src*/,
                           const std::string& /*target*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status LockFile(const std::string& /*fname*/,
                           FileLock** /*lock*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
-  virtual Status UnlockFile(FileLock* /*lock*/) override {
-    return Status::NotSupported();
-  }
+  virtual Status UnlockFile(FileLock* /*lock*/) override { return notsup; }
 
   virtual Status NewLogger(const std::string& /*fname*/,
                            std::shared_ptr<Logger>* /*result*/) override {
-    return Status::NotSupported();
-  }
-
-  Status IsDirectory(const std::string& /*path*/, bool* /*is_dir*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual void Schedule(void (* /*function*/)(void* arg), void* /*arg*/,
@@ -348,7 +347,7 @@ class HdfsEnv : public Env {
   }
 
   virtual Status GetTestDirectory(std::string* /*path*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual uint64_t NowMicros() override { return 0; }
@@ -356,16 +355,16 @@ class HdfsEnv : public Env {
   virtual void SleepForMicroseconds(int /*micros*/) override {}
 
   virtual Status GetHostName(char* /*name*/, uint64_t /*len*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status GetCurrentTime(int64_t* /*unix_time*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual Status GetAbsolutePath(const std::string& /*db_path*/,
                                  std::string* /*outputpath*/) override {
-    return Status::NotSupported();
+    return notsup;
   }
 
   virtual void SetBackgroundThreads(int /*number*/,
@@ -381,6 +380,6 @@ class HdfsEnv : public Env {
     return 0;
   }
 };
-}  // namespace ROCKSDB_NAMESPACE
+}
 
 #endif // USE_HDFS

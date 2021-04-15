@@ -15,18 +15,13 @@
 #include <cstring>
 #include "port/port.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 const char* Status::CopyState(const char* state) {
 #ifdef OS_WIN
   const size_t cch = std::strlen(state) + 1;  // +1 for the null terminator
   char* result = new char[cch];
-  errno_t ret
-#if defined(_MSC_VER)
-    ;
-#else
-    __attribute__((__unused__));
-#endif
+  errno_t ret;
   ret = strncpy_s(result, cch, state, cch - 1);
   result[cch - 1] = '\0';
   assert(ret == 0);
@@ -48,13 +43,6 @@ static const char* msgs[static_cast<int>(Status::kMaxSubCode)] = {
     "Memory limit reached",                               // kMemoryLimit
     "Space limit reached",                                // kSpaceLimit
     "No such file or directory",                          // kPathNotFound
-    // KMergeOperandsInsufficientCapacity
-    "Insufficient capacity for merge operands",
-    // kManualCompactionPaused
-    "Manual compaction paused",
-    " (overwritten)",    // kOverwritten, subcode of OK
-    "Txn not prepared",  // kTxnNotPrepared
-    "IO fenced off",     // kIOFenced
 };
 
 Status::Status(Code _code, SubCode _subcode, const Slice& msg,
@@ -77,10 +65,8 @@ Status::Status(Code _code, SubCode _subcode, const Slice& msg,
 }
 
 std::string Status::ToString() const {
-#ifdef ROCKSDB_ASSERT_STATUS_CHECKED
-  checked_ = true;
-#endif  // ROCKSDB_ASSERT_STATUS_CHECKED
-  const char* type = nullptr;
+  char tmp[30];
+  const char* type;
   switch (code_) {
     case kOk:
       return "OK";
@@ -123,29 +109,19 @@ std::string Status::ToString() const {
     case kTryAgain:
       type = "Operation failed. Try again.: ";
       break;
-    case kCompactionTooLarge:
-      type = "Compaction too large: ";
-      break;
     case kColumnFamilyDropped:
       type = "Column family dropped: ";
       break;
-    case kMaxCode:
-      assert(false);
+    default:
+      snprintf(tmp, sizeof(tmp), "Unknown code(%d): ",
+               static_cast<int>(code()));
+      type = tmp;
       break;
-  }
-  char tmp[30];
-  if (type == nullptr) {
-    // This should not happen since `code_` should be a valid non-`kMaxCode`
-    // member of the `Code` enum. The above switch-statement should have had a
-    // case assigning `type` to a corresponding string.
-    assert(false);
-    snprintf(tmp, sizeof(tmp), "Unknown code(%d): ", static_cast<int>(code()));
-    type = tmp;
   }
   std::string result(type);
   if (subcode_ != kNone) {
     uint32_t index = static_cast<int32_t>(subcode_);
-    assert(sizeof(msgs) / sizeof(msgs[0]) > index);
+    assert(sizeof(msgs) > index);
     result.append(msgs[index]);
   }
 
@@ -155,4 +131,4 @@ std::string Status::ToString() const {
   return result;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

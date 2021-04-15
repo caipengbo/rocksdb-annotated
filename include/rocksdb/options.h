@@ -19,12 +19,9 @@
 
 #include "rocksdb/advanced_options.h"
 #include "rocksdb/comparator.h"
-#include "rocksdb/compression_type.h"
 #include "rocksdb/env.h"
-#include "rocksdb/file_checksum.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/sst_partitioner.h"
-#include "rocksdb/types.h"
 #include "rocksdb/universal_compaction.h"
 #include "rocksdb/version.h"
 #include "rocksdb/write_buffer_manager.h"
@@ -33,7 +30,7 @@
 #undef max
 #endif
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Cache;
 class CompactionFilter;
@@ -53,7 +50,33 @@ class Slice;
 class Statistics;
 class InternalKeyComparator;
 class WalFilter;
-class FileSystem;
+
+// DB contents are stored in a set of blocks, each of which holds a
+// sequence of key,value pairs.  Each block may be compressed before
+// being stored in a file.  The following enum describes which
+// compression method (if any) is used to compress a block.
+enum CompressionType : unsigned char {
+  // NOTE: do not change the values of existing entries, as these are
+  // part of the persistent format on disk.
+  kNoCompression = 0x0,
+  kSnappyCompression = 0x1,
+  kZlibCompression = 0x2,
+  kBZip2Compression = 0x3,
+  kLZ4Compression = 0x4,
+  kLZ4HCCompression = 0x5,
+  kXpressCompression = 0x6,
+  kZSTD = 0x7,
+
+  // Only use kZSTDNotFinalCompression if you have to use ZSTD lib older than
+  // 0.8.0 or consider a possibility of downgrading the service or copying
+  // the database files to another service running with an older version of
+  // RocksDB that doesn't have kZSTD. Otherwise, you should use kZSTD. We will
+  // eventually remove the option from the public API.
+  kZSTDNotFinalCompression = 0x40,
+
+  // kDisableCompressionOption is used to disable some compression options.
+  kDisableCompressionOption = 0xff,
+};
 
 struct Options;
 struct DbPath;
@@ -248,7 +271,17 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Dynamically changeable through SetOptions() API
   uint64_t max_bytes_for_level_base = 256 * 1048576;
 
-  // Deprecated.
+  // If non-zero, compactions will periodically refresh the snapshot list. The
+  // delay for the first refresh is snap_refresh_nanos nano seconds and
+  // exponentially increases afterwards. When having many short-lived snapshots,
+  // this option helps reducing the cpu usage of long-running compactions. The
+  // feature is disabled when max_subcompactions is greater than one.
+  //
+  // NOTE: This feautre is currently incompatible with RangeDeletes.
+  //
+  // Default: 0
+  //
+  // Dynamically changeable through SetOptions() API
   uint64_t snap_refresh_nanos = 0;
 
   // Disable automatic compactions. Manual compactions can still
@@ -304,24 +337,8 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
 
 enum class WALRecoveryMode : char {
   // Original levelDB recovery
-  //
-  // We tolerate the last record in any log to be incomplete due to a crash
-  // while writing it. Zeroed bytes from preallocation are also tolerated in the
-  // trailing data of any log.
-  //
-  // Use case: Applications for which updates, once applied, must not be rolled
-  // back even after a crash-recovery. In this recovery mode, RocksDB guarantees
-  // this as long as `WritableFile::Append()` writes are durable. In case the
-  // user needs the guarantee in more situations (e.g., when
-  // `WritableFile::Append()` writes to page cache, but the user desires this
-  // guarantee in face of power-loss crash-recovery), RocksDB offers various
-  // mechanisms to additionally invoke `WritableFile::Sync()` in order to
-  // strengthen the guarantee.
-  //
-  // This differs from `kPointInTimeRecovery` in that, in case a corruption is
-  // detected during recovery, this mode will refuse to open the DB. Whereas,
-  // `kPointInTimeRecovery` will stop recovery just before the corruption since
-  // that is a valid point-in-time to which to recover.
+  // We tolerate incomplete record in trailing data on all logs
+  // Use case : This is legacy behavior
   kTolerateCorruptedTailRecords = 0x00,
   // Recover from clean shutdown
   // We don't expect to find any corruption in the WAL
@@ -348,8 +365,6 @@ struct DbPath {
   DbPath() : target_size(0) {}
   DbPath(const std::string& p, uint64_t t) : path(p), target_size(t) {}
 };
-
-extern const char* kHostnameForDbHostId;
 
 struct DBOptions {
   // The function recovers options to the option as in version 4.6.
@@ -393,20 +408,8 @@ struct DBOptions {
   // Default: true
   bool paranoid_checks = true;
 
-  // If true, the log numbers and sizes of the synced WALs are tracked
-  // in MANIFEST, then during DB recovery, if a synced WAL is missing
-  // from disk, or the WAL's size does not match the recorded size in
-  // MANIFEST, an error will be reported and the recovery will be aborted.
-  //
-  // Note that this option does not work with secondary instance.
-  //
-  // Default: false
-  bool track_and_verify_wals_in_manifest = false;
-
   // Use the specified object to interact with the environment,
-  // e.g. to read/write files, schedule background work, etc. In the near
-  // future, support for doing storage operations such as read/write files
-  // through env will be deprecated in favor of file_system (see below)
+  // e.g. to read/write files, schedule background work, etc.
   // Default: Env::Default()
   Env* env = Env::Default();
 
@@ -572,8 +575,6 @@ struct DBOptions {
   // concurrently perform a compaction job by breaking it into multiple,
   // smaller ones that are run simultaneously.
   // Default: 1 (i.e. no subcompactions)
-  //
-  // Dynamically changeable through SetDBOptions() API.
   uint32_t max_subcompactions = 1;
 
   // NOT SUPPORTED ANYMORE: RocksDB automatically decides this based on the
@@ -944,6 +945,20 @@ struct DBOptions {
   //
   // Default: false
   bool unordered_write = false;
+  // By default, a single write thread queue is maintained. The thread gets
+  // to the head of the queue becomes write batch group leader and responsible
+  // for writing to WAL.
+  //
+  // If enable_multi_thread_write is true, there would be one thread pool
+  // sharing task with write thread. Every task would write one WriteBatch into
+  // memtable. And write thread could take tasks from write pool, when it is
+  // waiting to be waked. Enabling the feature may improve write throughput when
+  // you need not sync WAL, and spend too much time on inserting into memtable.
+  // You should use the interface MultiThreadWrite, and break your batch into
+  // smaller one.
+  //
+  // Default: false
+  bool enable_multi_thread_write = false;
 
   // If true, allow multi-writers to update mem tables in parallel.
   // Only some memtable_factory-s support concurrent writes; currently it
@@ -962,13 +977,6 @@ struct DBOptions {
   //
   // Default: true
   bool enable_write_thread_adaptive_yield = true;
-
-  // The maximum limit of number of bytes that are written in a single batch
-  // of WAL or memtable write. It is followed when the leader write size
-  // is larger than 1/8 of this limit.
-  //
-  // Default: 1 MB
-  uint64_t max_write_batch_group_size_bytes = 1 << 20;
 
   // The maximum number of microseconds that a write operation will use
   // a yielding spin loop to coordinate with other write threads before
@@ -996,16 +1004,6 @@ struct DBOptions {
   //
   // Default: false
   bool skip_stats_update_on_db_open = false;
-
-  // If true, then DB::Open() will not fetch and check sizes of all sst files.
-  // This may significantly speed up startup if there are many sst files,
-  // especially when using non-default Env with expensive GetFileSize().
-  // We'll still check that all required sst files exist.
-  // If paranoid_checks is false, this option is ignored, and sst files are
-  // not checked at all.
-  //
-  // Default: false
-  bool skip_checking_sst_file_sizes_on_db_open = false;
 
   // Recovery mode to control the consistency while replaying WAL
   // Default: kPointInTimeRecovery
@@ -1109,24 +1107,13 @@ struct DBOptions {
   // independently if the process crashes later and tries to recover.
   bool atomic_flush = false;
 
-  // If true, working thread may avoid doing unnecessary and long-latency
-  // operation (such as deleting obsolete files directly or deleting memtable)
-  // and will instead schedule a background job to do it.
-  // Use it if you're latency-sensitive.
+  // If true, ColumnFamilyHandle's and Iterator's destructors won't delete
+  // obsolete files directly and will instead schedule a background job
+  // to do it. Use it if you're destroying iterators or ColumnFamilyHandle-s
+  // from latency-sensitive threads.
   // If set to true, takes precedence over
   // ReadOptions::background_purge_on_iterator_cleanup.
   bool avoid_unnecessary_blocking_io = false;
-
-  // Historically DB ID has always been stored in Identity File in DB folder.
-  // If this flag is true, the DB ID is written to Manifest file in addition
-  // to the Identity file. By doing this 2 problems are solved
-  // 1. We don't checksum the Identity file where as Manifest file is.
-  // 2. Since the source of truth for DB is Manifest file DB ID will sit with
-  //    the source of truth. Previously the Identity file could be copied
-  //    independent of Manifest and that can result in wrong DB ID.
-  // We recommend setting this flag to true.
-  // Default: false
-  bool write_dbid_to_manifest = false;
 
   // The number of bytes to prefetch when reading the log. This is mostly useful
   // for reading a remotely located log, as it can save the number of
@@ -1134,64 +1121,6 @@ struct DBOptions {
   //
   // Default: 0
   size_t log_readahead_size = 0;
-
-  // If user does NOT provide the checksum generator factory, the file checksum
-  // will NOT be used. A new file checksum generator object will be created
-  // when a SST file is created. Therefore, each created FileChecksumGenerator
-  // will only be used from a single thread and so does not need to be
-  // thread-safe.
-  //
-  // Default: nullptr
-  std::shared_ptr<FileChecksumGenFactory> file_checksum_gen_factory = nullptr;
-
-  // By default, RocksDB recovery fails if any table file referenced in
-  // MANIFEST are missing after scanning the MANIFEST.
-  // Best-efforts recovery is another recovery mode that
-  // tries to restore the database to the most recent point in time without
-  // missing file.
-  // Currently not compatible with atomic flush. Furthermore, WAL files will
-  // not be used for recovery if best_efforts_recovery is true.
-  // Default: false
-  bool best_efforts_recovery = false;
-
-  // It defines how many times db resume is called by a separate thread when
-  // background retryable IO Error happens. When background retryable IO
-  // Error happens, SetBGError is called to deal with the error. If the error
-  // can be auto-recovered (e.g., retryable IO Error during Flush or WAL write),
-  // then db resume is called in background to recover from the error. If this
-  // value is 0 or negative, db resume will not be called.
-  //
-  // Default: INT_MAX
-  int max_bgerror_resume_count = INT_MAX;
-
-  // If max_bgerror_resume_count is >= 2, db resume is called multiple times.
-  // This option decides how long to wait to retry the next resume if the
-  // previous resume fails and satisfy redo resume conditions.
-  //
-  // Default: 1000000 (microseconds).
-  uint64_t bgerror_resume_retry_interval = 1000000;
-
-  // It allows user to opt-in to get error messages containing corrupted
-  // keys/values. Corrupt keys, values will be logged in the
-  // messages/logs/status that will help users with the useful information
-  // regarding affected data. By default value is set false to prevent users
-  // data to be exposed in the logs/messages etc.
-  //
-  // Default: false
-  bool allow_data_in_errors = false;
-
-  // A string identifying the machine hosting the DB. This
-  // will be written as a property in every SST file written by the DB (or
-  // by offline writers such as SstFileWriter and RepairDB). It can be useful
-  // for troubleshooting in memory corruption caused by a failing host when
-  // writing a file, by tracing back to the writing host. These corruptions
-  // may not be caught by the checksum since they happen before checksumming.
-  // If left as default, the table writer will substitute it with the actual
-  // hostname when writing the SST file. If set to an empty stirng, the
-  // property will not be written to the SST file.
-  //
-  // Default: hostname
-  std::string db_host_id = kHostnameForDbHostId;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)
@@ -1269,7 +1198,7 @@ struct ReadOptions {
   // "iterate_upper_bound" defines the extent upto which the forward iterator
   // can returns entries. Once the bound is reached, Valid() will be false.
   // "iterate_upper_bound" is exclusive ie the bound value is
-  // not a valid entry. If prefix_extractor is not null, the Seek target
+  // not a valid entry.  If iterator_extractor is not null, the Seek target
   // and iterate_upper_bound need to have the same prefix.
   // This is because ordering is not guaranteed outside of prefix domain.
   //
@@ -1308,8 +1237,7 @@ struct ReadOptions {
   // block cache?
   // Callers may wish to set this field to false for bulk scans.
   // This would help not to the change eviction order of existing items in the
-  // block cache.
-  // Default: true
+  // block cache. Default: true
   bool fill_cache;
 
   // Specify to create a tailing iterator -- a special iterator that has a
@@ -1330,16 +1258,7 @@ struct ReadOptions {
   // If true when calling Get(), we also skip prefix bloom when reading from
   // block based table. It provides a way to read existing data after
   // changing implementation of prefix extractor.
-  // Default: false
   bool total_order_seek;
-
-  // When true, by default use total_order_seek = true, and RocksDB can
-  // selectively enable prefix seek mode if won't generate a different result
-  // from total_order_seek, based on seek key, and iterator upper bound.
-  // Not suppported in ROCKSDB_LITE mode, in the way that even with value true
-  // prefix mode is not used.
-  // Default: false
-  bool auto_prefix_mode;
 
   // Enforce that the iterator only iterates over the same prefix as the seek.
   // This option is effective only for prefix seeks, i.e. prefix_extractor is
@@ -1388,39 +1307,9 @@ struct ReadOptions {
   // specified timestamp. All timestamps of the same database must be of the
   // same length and format. The user is responsible for providing a customized
   // compare function via Comparator to order <key, timestamp> tuples.
-  // For iterator, iter_start_ts is the lower bound (older) and timestamp
-  // serves as the upper bound. Versions of the same record that fall in
-  // the timestamp range will be returned. If iter_start_ts is nullptr,
-  // only the most recent version visible to timestamp is returned.
   // The user-specified timestamp feature is still under active development,
   // and the API is subject to change.
-  // Default: nullptr
   const Slice* timestamp;
-  const Slice* iter_start_ts;
-
-  // Deadline for completing an API call (Get/MultiGet/Seek/Next for now)
-  // in microseconds.
-  // It should be set to microseconds since epoch, i.e, gettimeofday or
-  // equivalent plus allowed duration in microseconds. The best way is to use
-  // env->NowMicros() + some timeout.
-  // This is best efforts. The call may exceed the deadline if there is IO
-  // involved and the file system doesn't support deadlines, or due to
-  // checking for deadline periodically rather than for every key if
-  // processing a batch
-  std::chrono::microseconds deadline;
-
-  // A timeout in microseconds to be passed to the underlying FileSystem for
-  // reads. As opposed to deadline, this determines the timeout for each
-  // individual file read request. If a MultiGet/Get/Seek/Next etc call
-  // results in multiple reads, each read can last upto io_timeout us.
-  std::chrono::microseconds io_timeout;
-
-  // It limits the maximum cumulative value size of the keys in batch while
-  // reading through MultiGet. Once the cumulative value size exceeds this
-  // soft limit then all the remaining keys are returned with status Aborted.
-  //
-  // Default: std::numeric_limits<uint64_t>::max()
-  uint64_t value_size_soft_limit;
 
   ReadOptions();
   ReadOptions(bool cksum, bool cache);
@@ -1458,7 +1347,6 @@ struct WriteOptions {
   // (they were dropped),  ignore the write (don't return an error). If there
   // are multiple writes in a WriteBatch, other writes will succeed.
   // Default: false
-  // 如果CF不存在，那么写入会被ignore
   bool ignore_missing_column_families;
 
   // If true and we need to wait or sleep for the write request, fails
@@ -1474,15 +1362,6 @@ struct WriteOptions {
   //
   // Default: false
   bool low_pri;
-
-  // If true, this writebatch will maintain the last insert positions of each
-  // memtable as hints in concurrent write. It can improve write performance
-  // in concurrent writes if keys in one writebatch are sequential. In
-  // non-concurrent writes (when concurrent_memtable_writes is false) this
-  // option will be ignored.
-  //
-  // Default: false
-  bool memtable_insert_hint_per_batch;
 
   // Timestamp of write operation, e.g. Put. All timestamps of the same
   // database must share the same length and format. The user is also
@@ -1501,7 +1380,6 @@ struct WriteOptions {
         ignore_missing_column_families(false),
         no_slowdown(false),
         low_pri(false),
-        memtable_insert_hint_per_batch(false),
         timestamp(nullptr) {}
 };
 
@@ -1607,6 +1485,7 @@ struct IngestExternalFileOptions {
   // with allow_ingest_behind=true since the dawn of time.
   // All files will be ingested at the bottommost level with seqno=0.
   bool ingest_behind = false;
+
   // Set to true if you would like to write global_seqno to a given offset in
   // the external SST file for backward compatibility. Older versions of
   // RocksDB writes a global_seqno to a given offset within ingested SST files,
@@ -1624,33 +1503,6 @@ struct IngestExternalFileOptions {
   // Warning: setting this to true causes slowdown in file ingestion because
   // the external SST file has to be read.
   bool verify_checksums_before_ingest = false;
-  // When verify_checksums_before_ingest = true, RocksDB uses default
-  // readahead setting to scan the file while verifying checksums before
-  // ingestion.
-  // Users can override the default value using this option.
-  // Using a large readahead size (> 2MB) can typically improve the performance
-  // of forward iteration on spinning disks.
-  size_t verify_checksums_readahead_size = 0;
-  // Set to TRUE if user wants to verify the sst file checksum of ingested
-  // files. The DB checksum function will generate the checksum of each
-  // ingested file (if file_checksum_gen_factory is set) and compare the
-  // checksum function name and checksum with the ingested checksum information.
-  //
-  // If this option is set to True: 1) if DB does not enable checksum
-  // (file_checksum_gen_factory == nullptr), the ingested checksum information
-  // will be ignored; 2) If DB enable the checksum function, we calculate the
-  // sst file checksum after the file is moved or copied and compare the
-  // checksum and checksum name. If checksum or checksum function name does
-  // not match, ingestion will be failed. If the verification is sucessful,
-  // checksum and checksum function name will be stored in Manifest.
-  // If this option is set to FALSE, 1) if DB does not enable checksum,
-  // the ingested checksum information will be ignored; 2) if DB enable the
-  // checksum, we only verify the ingested checksum function name and we
-  // trust the ingested checksum. If the checksum function name matches, we
-  // store the checksum in Manifest. DB does not calculate the checksum during
-  // ingestion. However, if no checksum information is provided with the
-  // ingested files, DB will generate the checksum and store in the Manifest.
-  bool verify_file_checksum = true;
 };
 
 enum TraceFilterType : uint64_t {
@@ -1688,16 +1540,6 @@ struct SizeApproximationOptions {
   // Defines whether the returned size should include data serialized to disk.
   // If set to false, include_memtabtles must be true.
   bool include_files = true;
-  // When approximating the files total size that is used to store a keys range
-  // using DB::GetApproximateSizes, allow approximation with an error margin of
-  // up to total_files_size * files_size_error_margin. This allows to take some
-  // shortcuts in files size approximation, resulting in better performance,
-  // while guaranteeing the resulting error is within a reasonable margin.
-  // E.g., if the value is 0.1, then the error margin of the returned files size
-  // approximation will be within 10%.
-  // If the value is non-positive - a more precise yet more CPU intensive
-  // estimation is performed.
-  double files_size_error_margin = -1.0;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

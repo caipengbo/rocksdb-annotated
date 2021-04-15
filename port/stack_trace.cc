@@ -5,22 +5,17 @@
 //
 #include "port/stack_trace.h"
 
-#if defined(ROCKSDB_LITE) ||                                                  \
-    !(defined(ROCKSDB_BACKTRACE) || defined(OS_MACOSX)) || defined(CYGWIN) || \
-    defined(OS_FREEBSD) || defined(OS_SOLARIS) || defined(OS_WIN)
+#if defined(ROCKSDB_LITE) || !(defined(ROCKSDB_BACKTRACE) || defined(OS_MACOSX)) || \
+    defined(CYGWIN) || defined(OS_FREEBSD) || defined(OS_SOLARIS)
 
 // noop
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace port {
 void InstallStackTraceHandler() {}
 void PrintStack(int /*first_frames_to_skip*/) {}
-void PrintAndFreeStack(void* /*callstack*/, int /*num_frames*/) {}
-void* SaveStack(int* /*num_frames*/, int /*first_frames_to_skip*/) {
-  return nullptr;
-}
 }  // namespace port
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #else
 
@@ -32,12 +27,12 @@ void* SaveStack(int* /*num_frames*/, int /*first_frames_to_skip*/) {
 #include <unistd.h>
 #include <cxxabi.h>
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace port {
 
 namespace {
 
-#if defined(OS_LINUX) || defined(OS_FREEBSD) || defined(OS_GNU_KFREEBSD)
+#if defined(OS_LINUX) || defined(OS_FREEBSD)
 const char* GetExecutableName() {
   static char name[1024];
 
@@ -104,38 +99,18 @@ void PrintStackTraceLine(const char* symbol, void* frame) {
 
 }  // namespace
 
-void PrintStack(void* frames[], int num_frames) {
-  auto symbols = backtrace_symbols(frames, num_frames);
-
-  for (int i = 0; i < num_frames; ++i) {
-    fprintf(stderr, "#%-2d  ", i);
-    PrintStackTraceLine((symbols != nullptr) ? symbols[i] : nullptr, frames[i]);
-  }
-  free(symbols);
-}
-
 void PrintStack(int first_frames_to_skip) {
   const int kMaxFrames = 100;
   void* frames[kMaxFrames];
 
   auto num_frames = backtrace(frames, kMaxFrames);
-  PrintStack(&frames[first_frames_to_skip], num_frames - first_frames_to_skip);
-}
+  auto symbols = backtrace_symbols(frames, num_frames);
 
-void PrintAndFreeStack(void* callstack, int num_frames) {
-  PrintStack(static_cast<void**>(callstack), num_frames);
-  free(callstack);
-}
-
-void* SaveStack(int* num_frames, int first_frames_to_skip) {
-  const int kMaxFrames = 100;
-  void* frames[kMaxFrames];
-
-  auto count = backtrace(frames, kMaxFrames);
-  *num_frames = count - first_frames_to_skip;
-  void* callstack = malloc(sizeof(void*) * *num_frames);
-  memcpy(callstack, &frames[first_frames_to_skip], sizeof(void*) * *num_frames);
-  return callstack;
+  for (int i = first_frames_to_skip; i < num_frames; ++i) {
+    fprintf(stderr, "#%-2d  ", i - first_frames_to_skip);
+    PrintStackTraceLine((symbols != nullptr) ? symbols[i] : nullptr, frames[i]);
+  }
+  free(symbols);
 }
 
 static void StackTraceHandler(int sig) {
@@ -144,22 +119,6 @@ static void StackTraceHandler(int sig) {
   fprintf(stderr, "Received signal %d (%s)\n", sig, strsignal(sig));
   // skip the top three signal handler related frames
   PrintStack(3);
-
-  // Efforts to fix or suppress TSAN warnings "signal-unsafe call inside of
-  // a signal" have failed, so just warn the user about them.
-#if defined(__clang__) && defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-  fprintf(stderr,
-          "==> NOTE: any above warnings about \"signal-unsafe call\" are\n"
-          "==> ignorable, as they are expected when generating a stack\n"
-          "==> trace because of a signal under TSAN. Consider why the\n"
-          "==> signal was generated to begin with, and the stack trace\n"
-          "==> in the TSAN warning can be useful for that. (The stack\n"
-          "==> trace printed by the signal handler is likely obscured\n"
-          "==> by TSAN output.)\n");
-#endif
-#endif
-
   // re-signal to default handler (so we still get core dump if needed...)
   raise(sig);
 }
@@ -174,6 +133,6 @@ void InstallStackTraceHandler() {
 }
 
 }  // namespace port
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif

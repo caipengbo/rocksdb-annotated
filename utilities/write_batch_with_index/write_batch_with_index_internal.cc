@@ -8,17 +8,15 @@
 #include "utilities/write_batch_with_index/write_batch_with_index_internal.h"
 
 #include "db/column_family.h"
-#include "db/db_impl/db_impl.h"
 #include "db/merge_context.h"
 #include "db/merge_helper.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/db.h"
 #include "rocksdb/utilities/write_batch_with_index.h"
-#include "util/cast_util.h"
 #include "util/coding.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Env;
 class Logger;
@@ -46,9 +44,6 @@ Status ReadableWriteBatch::GetEntryFromDataOffset(size_t data_offset,
   uint32_t column_family;
   Status s = ReadRecordFromWriteBatch(&input, &tag, &column_family, Key, value,
                                       blob, xid);
-  if (!s.ok()) {
-    return s;
-  }
 
   switch (tag) {
     case kTypeColumnFamilyValue:
@@ -156,102 +151,34 @@ int WriteBatchEntryComparator::CompareKey(uint32_t column_family,
   }
 }
 
-WriteEntry WBWIIteratorImpl::Entry() const {
-  WriteEntry ret;
-  Slice blob, xid;
-  const WriteBatchIndexEntry* iter_entry = skip_list_iter_.key();
-  // this is guaranteed with Valid()
-  assert(iter_entry != nullptr &&
-         iter_entry->column_family == column_family_id_);
-  auto s = write_batch_->GetEntryFromDataOffset(
-      iter_entry->offset, &ret.type, &ret.key, &ret.value, &blob, &xid);
-  assert(s.ok());
-  assert(ret.type == kPutRecord || ret.type == kDeleteRecord ||
-         ret.type == kSingleDeleteRecord || ret.type == kDeleteRangeRecord ||
-         ret.type == kMergeRecord);
-  return ret;
-}
-
-bool WBWIIteratorImpl::MatchesKey(uint32_t cf_id, const Slice& key) {
-  if (Valid()) {
-    return comparator_->CompareKey(cf_id, key, Entry().key) == 0;
-  } else {
-    return false;
-  }
-}
-
-WriteBatchWithIndexInternal::WriteBatchWithIndexInternal(
-    DB* db, ColumnFamilyHandle* column_family)
-    : db_(db), db_options_(nullptr), column_family_(column_family) {
-  if (db_ != nullptr && column_family_ == nullptr) {
-    column_family_ = db_->DefaultColumnFamily();
-  }
-}
-
-WriteBatchWithIndexInternal::WriteBatchWithIndexInternal(
-    const DBOptions* db_options, ColumnFamilyHandle* column_family)
-    : db_(nullptr), db_options_(db_options), column_family_(column_family) {}
-
-Status WriteBatchWithIndexInternal::MergeKey(const Slice& key,
-                                             const Slice* value,
-                                             MergeContext& merge_context,
-                                             std::string* result,
-                                             Slice* result_operand) {
-  if (column_family_ != nullptr) {
-    auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family_);
-    const auto merge_operator = cfh->cfd()->ioptions()->merge_operator;
-    if (merge_operator == nullptr) {
-      return Status::InvalidArgument(
-          "Merge_operator must be set for column_family");
-    } else if (db_ != nullptr) {
-      const ImmutableDBOptions& immutable_db_options =
-          static_cast_with_check<DBImpl>(db_->GetRootDB())
-              ->immutable_db_options();
-      Statistics* statistics = immutable_db_options.statistics.get();
-      Env* env = immutable_db_options.env;
-      Logger* logger = immutable_db_options.info_log.get();
-
-      return MergeHelper::TimedFullMerge(
-          merge_operator, key, value, merge_context.GetOperands(), result,
-          logger, statistics, env, result_operand);
-    } else if (db_options_ != nullptr) {
-      Statistics* statistics = db_options_->statistics.get();
-      Env* env = db_options_->env;
-      Logger* logger = db_options_->info_log.get();
-      return MergeHelper::TimedFullMerge(
-          merge_operator, key, value, merge_context.GetOperands(), result,
-          logger, statistics, env, result_operand);
-    } else {
-      return MergeHelper::TimedFullMerge(
-          merge_operator, key, value, merge_context.GetOperands(), result,
-          nullptr, nullptr, Env::Default(), result_operand);
-    }
-  } else {
-    return Status::InvalidArgument("Must provide a column_family");
-  }
-}
-
 WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
-    WriteBatchWithIndex* batch, const Slice& key, MergeContext* merge_context,
+    const ImmutableDBOptions& immuable_db_options, WriteBatchWithIndex* batch,
+    ColumnFamilyHandle* column_family, const Slice& key,
+    MergeContext* merge_context, WriteBatchEntryComparator* cmp,
     std::string* value, bool overwrite_key, Status* s) {
-  uint32_t cf_id = GetColumnFamilyID(column_family_);
+  uint32_t cf_id = GetColumnFamilyID(column_family);
   *s = Status::OK();
-  Result result = kNotFound;
+  WriteBatchWithIndexInternal::Result result =
+      WriteBatchWithIndexInternal::Result::kNotFound;
 
-  std::unique_ptr<WBWIIteratorImpl> iter(
-      static_cast_with_check<WBWIIteratorImpl>(
-          batch->NewIterator(column_family_)));
+  std::unique_ptr<WBWIIterator> iter =
+      std::unique_ptr<WBWIIterator>(batch->NewIterator(column_family));
 
   // We want to iterate in the reverse order that the writes were added to the
   // batch.  Since we don't have a reverse iterator, we must seek past the end.
   // TODO(agiardullo): consider adding support for reverse iteration
   iter->Seek(key);
-  while (iter->Valid() && iter->MatchesKey(cf_id, key)) {
+  while (iter->Valid()) {
+    const WriteEntry entry = iter->Entry();
+    if (cmp->CompareKey(cf_id, entry.key, key) != 0) {
+      break;
+    }
+
     iter->Next();
   }
 
   if (!(*s).ok()) {
-    return WriteBatchWithIndexInternal::kError;
+    return WriteBatchWithIndexInternal::Result::kError;
   }
 
   if (!iter->Valid()) {
@@ -263,12 +190,12 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
 
   Slice entry_value;
   while (iter->Valid()) {
-    if (!iter->MatchesKey(cf_id, key)) {
+    const WriteEntry entry = iter->Entry();
+    if (cmp->CompareKey(cf_id, entry.key, key) != 0) {
       // Unexpected error or we've reached a different next key
       break;
     }
 
-    const WriteEntry entry = iter->Entry();
     switch (entry.type) {
       case kPutRecord: {
         result = WriteBatchWithIndexInternal::Result::kFound;
@@ -319,13 +246,46 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
         result == WriteBatchWithIndexInternal::Result::kDeleted) {
       // Found a Put or Delete.  Merge if necessary.
       if (merge_context->GetNumOperands() > 0) {
-        if (result == WriteBatchWithIndexInternal::Result::kFound) {
-          *s = MergeKey(key, &entry_value, *merge_context, value);
+        const MergeOperator* merge_operator;
+
+        if (column_family != nullptr) {
+          auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
+          merge_operator = cfh->cfd()->ioptions()->merge_operator;
         } else {
-          *s = MergeKey(key, nullptr, *merge_context, value);
+          *s = Status::InvalidArgument("Must provide a column_family");
+          result = WriteBatchWithIndexInternal::Result::kError;
+          return result;
+        }
+        Statistics* statistics = immuable_db_options.statistics.get();
+        Env* env = immuable_db_options.env;
+        Logger* logger = immuable_db_options.info_log.get();
+
+        ValueType value_type;
+        Slice* merge_data;
+        if (result == WriteBatchWithIndexInternal::Result::kFound) {
+          value_type = kTypeValue;
+          merge_data = &entry_value;
+        } else {  // Key not presend. (result == kDeleted)
+          value_type = kTypeDeletion;
+          merge_data = nullptr;
+        }
+        if (merge_operator) {
+          *s = MergeHelper::TimedFullMerge(
+              merge_operator, key, value_type, merge_data,
+              merge_context->GetOperands(), &value_type, value, logger,
+              statistics, env);
+          if (value_type == kTypeBlobIndex) {
+            *s = Status::NotSupported(
+                "Encounter unsupported blob value. Please open DB with "
+                "rocksdb::blob_db::BlobDB instead.");
+          }
+        } else {
+          *s = Status::InvalidArgument("Options::merge_operator must be set");
         }
         if ((*s).ok()) {
           result = WriteBatchWithIndexInternal::Result::kFound;
+        } else if ((*s).IsNotFound()) {
+          result = WriteBatchWithIndexInternal::Result::kDeleted;
         } else {
           result = WriteBatchWithIndexInternal::Result::kError;
         }
@@ -340,6 +300,6 @@ WriteBatchWithIndexInternal::Result WriteBatchWithIndexInternal::GetFromBatch(
   return result;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // !ROCKSDB_LITE

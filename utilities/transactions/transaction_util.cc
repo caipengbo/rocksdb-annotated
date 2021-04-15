@@ -14,10 +14,9 @@
 #include "db/db_impl/db_impl.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/write_batch_with_index.h"
-#include "util/cast_util.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 Status TransactionUtil::CheckKeyForConflicts(
     DBImpl* db_impl, ColumnFamilyHandle* column_family, const std::string& key,
@@ -25,7 +24,7 @@ Status TransactionUtil::CheckKeyForConflicts(
     SequenceNumber min_uncommitted) {
   Status result;
 
-  auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+  auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
   auto cfd = cfh->cfd();
   SuperVersion* sv = db_impl->GetAndRefSuperVersion(cfd);
 
@@ -76,8 +75,8 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 
     if (cache_only) {
       result = Status::TryAgain(
-          "Transaction could not check for conflicts as the MemTable does not "
-          "contain a long enough history to check write at SequenceNumber: ",
+          "Transaction ould not check for conflicts as the MemTable does not "
+          "countain a long enough history to check write at SequenceNumber: ",
           ToString(snap_seq));
     }
   } else if (snap_seq < earliest_seq || min_uncommitted <= earliest_seq) {
@@ -95,7 +94,7 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
                " as the MemTable only contains changes newer than "
                "SequenceNumber %" PRIu64
                ".  Increasing the value of the "
-               "max_write_buffer_size_to_maintain option could reduce the "
+               "max_write_buffer_number_to_maintain option could reduce the "
                "frequency "
                "of this error.",
                snap_seq, earliest_seq);
@@ -137,20 +136,18 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 }
 
 Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
-                                              const LockTracker& tracker,
+                                              const TransactionKeyMap& key_map,
                                               bool cache_only) {
   Status result;
 
-  std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it(
-      tracker.GetColumnFamilyIterator());
-  assert(cf_it != nullptr);
-  while (cf_it->HasNext()) {
-    ColumnFamilyId cf = cf_it->Next();
+  for (auto& key_map_iter : key_map) {
+    uint32_t cf_id = key_map_iter.first;
+    const auto& keys = key_map_iter.second;
 
-    SuperVersion* sv = db_impl->GetAndRefSuperVersion(cf);
+    SuperVersion* sv = db_impl->GetAndRefSuperVersion(cf_id);
     if (sv == nullptr) {
       result = Status::InvalidArgument("Could not access column family " +
-                                       ToString(cf));
+                                       ToString(cf_id));
       break;
     }
 
@@ -159,21 +156,18 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
 
     // For each of the keys in this transaction, check to see if someone has
     // written to this key since the start of the transaction.
-    std::unique_ptr<LockTracker::KeyIterator> key_it(
-        tracker.GetKeyIterator(cf));
-    assert(key_it != nullptr);
-    while (key_it->HasNext()) {
-      const std::string& key = key_it->Next();
-      PointLockStatus status = tracker.GetPointLockStatus(cf, key);
-      const SequenceNumber key_seq = status.seq;
+    for (const auto& key_iter : keys) {
+      const auto& key = key_iter.first;
+      const SequenceNumber key_seq = key_iter.second.seq;
 
       result = CheckKey(db_impl, sv, earliest_seq, key_seq, key, cache_only);
+
       if (!result.ok()) {
         break;
       }
     }
 
-    db_impl->ReturnAndCleanupSuperVersion(cf, sv);
+    db_impl->ReturnAndCleanupSuperVersion(cf_id, sv);
 
     if (!result.ok()) {
       break;
@@ -183,6 +177,7 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
   return result;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+
+}  // namespace rocksdb
 
 #endif  // ROCKSDB_LITE

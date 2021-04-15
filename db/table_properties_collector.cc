@@ -9,7 +9,7 @@
 #include "util/coding.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 
@@ -33,9 +33,8 @@ Status UserKeyTablePropertiesCollector::InternalAdd(const Slice& key,
                                                     const Slice& value,
                                                     uint64_t file_size) {
   ParsedInternalKey ikey;
-  Status s = ParseInternalKey(key, &ikey, false /* log_err_key */);  // TODO
-  if (!s.ok()) {
-    return s;
+  if (!ParseInternalKey(key, &ikey)) {
+    return Status::InvalidArgument("Invalid internal key");
   }
 
   return collector_->AddUserKey(ikey.user_key, value, GetEntryType(ikey.type),
@@ -72,4 +71,4 @@ uint64_t GetMergeOperands(const UserCollectedProperties& props,
       props, TablePropertiesNames::kMergeOperands, property_present);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

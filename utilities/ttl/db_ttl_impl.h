@@ -17,14 +17,14 @@
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/utilities/db_ttl.h"
 #include "rocksdb/utilities/utility_db.h"
-#include "utilities/compaction_filters/layered_compaction_filter_base.h"
 
 #ifdef _WIN32
 // Windows API macro interference
 #undef GetCurrentTime
 #endif
 
-namespace ROCKSDB_NAMESPACE {
+
+namespace rocksdb {
 
 class DBWithTTLImpl : public DBWithTTL {
  public:
@@ -103,8 +103,8 @@ class DBWithTTLImpl : public DBWithTTL {
   void SetTtl(ColumnFamilyHandle *h, int32_t ttl) override;
 
  private:
-  // remember whether the Close completes or not
-  bool closed_;
+   // remember whether the Close completes or not
+   bool closed_;
 };
 
 class TtlIterator : public Iterator {
@@ -130,7 +130,7 @@ class TtlIterator : public Iterator {
 
   Slice key() const override { return iter_->key(); }
 
-  int32_t ttl_timestamp() const {
+  int32_t timestamp() const {
     return DecodeFixed32(iter_->value().data() + iter_->value().size() -
                          DBWithTTLImpl::kTSLength);
   }
@@ -143,22 +143,31 @@ class TtlIterator : public Iterator {
     return trimmed_value;
   }
 
+  bool seqno(SequenceNumber* no) const override { return iter_->seqno(no); }
+
   Status status() const override { return iter_->status(); }
 
  private:
   Iterator* iter_;
 };
 
-class TtlCompactionFilter : public LayeredCompactionFilterBase {
+class TtlCompactionFilter : public CompactionFilter {
  public:
-  TtlCompactionFilter(int32_t ttl, Env* env,
-                      const CompactionFilter* _user_comp_filter,
-                      std::unique_ptr<const CompactionFilter>
-                          _user_comp_filter_from_factory = nullptr)
-      : LayeredCompactionFilterBase(_user_comp_filter,
-                                    std::move(_user_comp_filter_from_factory)),
-        ttl_(ttl),
-        env_(env) {}
+  TtlCompactionFilter(
+      int32_t ttl, Env* env, const CompactionFilter* user_comp_filter,
+      std::unique_ptr<const CompactionFilter> user_comp_filter_from_factory =
+          nullptr)
+      : ttl_(ttl),
+        env_(env),
+        user_comp_filter_(user_comp_filter),
+        user_comp_filter_from_factory_(
+            std::move(user_comp_filter_from_factory)) {
+    // Unlike the merge operator, compaction filter is necessary for TTL, hence
+    // this would be called even if user doesn't specify any compaction-filter
+    if (!user_comp_filter_) {
+      user_comp_filter_ = user_comp_filter_from_factory_.get();
+    }
+  }
 
   virtual bool Filter(int level, const Slice& key, const Slice& old_val,
                       std::string* new_val, bool* value_changed) const
@@ -166,14 +175,14 @@ class TtlCompactionFilter : public LayeredCompactionFilterBase {
     if (DBWithTTLImpl::IsStale(old_val, ttl_, env_)) {
       return true;
     }
-    if (user_comp_filter() == nullptr) {
+    if (user_comp_filter_ == nullptr) {
       return false;
     }
     assert(old_val.size() >= DBWithTTLImpl::kTSLength);
     Slice old_val_without_ts(old_val.data(),
                              old_val.size() - DBWithTTLImpl::kTSLength);
-    if (user_comp_filter()->Filter(level, key, old_val_without_ts, new_val,
-                                   value_changed)) {
+    if (user_comp_filter_->Filter(level, key, old_val_without_ts, new_val,
+                                  value_changed)) {
       return true;
     }
     if (*value_changed) {
@@ -189,6 +198,8 @@ class TtlCompactionFilter : public LayeredCompactionFilterBase {
  private:
   int32_t ttl_;
   Env* env_;
+  const CompactionFilter* user_comp_filter_;
+  std::unique_ptr<const CompactionFilter> user_comp_filter_from_factory_;
 };
 
 class TtlCompactionFilterFactory : public CompactionFilterFactory {
@@ -265,13 +276,14 @@ class TtlMergeOperator : public MergeOperator {
       Slice existing_value_without_ts(merge_in.existing_value->data(),
                                       merge_in.existing_value->size() - ts_len);
       good = user_merge_op_->FullMergeV2(
-          MergeOperationInput(merge_in.key, &existing_value_without_ts,
-                              operands_without_ts, merge_in.logger),
+          MergeOperationInput(merge_in.key, merge_in.value_type,
+                              &existing_value_without_ts, operands_without_ts,
+                              merge_in.logger),
           &user_merge_out);
     } else {
       good = user_merge_op_->FullMergeV2(
-          MergeOperationInput(merge_in.key, nullptr, operands_without_ts,
-                              merge_in.logger),
+          MergeOperationInput(merge_in.key, merge_in.value_type, nullptr,
+                              operands_without_ts, merge_in.logger),
           &user_merge_out);
     }
 
@@ -349,5 +361,5 @@ class TtlMergeOperator : public MergeOperator {
   std::shared_ptr<MergeOperator> user_merge_op_;
   Env* env_;
 };
-}  // namespace ROCKSDB_NAMESPACE
+}
 #endif  // ROCKSDB_LITE

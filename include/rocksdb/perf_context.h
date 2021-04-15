@@ -11,7 +11,7 @@
 
 #include "rocksdb/perf_level.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // A thread local context for gathering performance counter efficiently
 // and transparently.
@@ -30,10 +30,10 @@ struct PerfContextByLevel {
 
   // total number of user key returned (only include keys that are found, does
   // not include keys that are deleted or merged without a final put
-  uint64_t user_key_return_count = 0;
+  uint64_t user_key_return_count;
 
   // total nanos spent on reading data from SST files
-  uint64_t get_from_table_nanos = 0;
+  uint64_t get_from_table_nanos;
 
   uint64_t block_cache_hit_count = 0;   // total number of block cache hits
   uint64_t block_cache_miss_count = 0;  // total number of block cache misses
@@ -234,4 +234,4 @@ struct PerfContext {
 // if defined(NPERF_CONTEXT), then the pointer is not thread-local
 PerfContext* get_perf_context();
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

@@ -11,7 +11,7 @@
 
 #include "rocksdb/utilities/env_mirror.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // An implementation of Env that mirrors all work over two backend
 // Env's.  This is useful for debugging purposes.
@@ -91,6 +91,10 @@ class RandomAccessFileMirror : public RandomAccessFile {
   size_t GetUniqueId(char* id, size_t max_size) const override {
     // NOTE: not verified
     return a_->GetUniqueId(id, max_size);
+  }
+
+  void SetUniqueId(std::string unique_id) override {
+    a_->SetUniqueId(unique_id);
   }
 };
 
@@ -258,5 +262,5 @@ Status EnvMirror::ReuseWritableFile(const std::string& fname,
   return as;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 #endif

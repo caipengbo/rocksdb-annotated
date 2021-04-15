@@ -9,29 +9,48 @@
 
 #include "test_util/testutil.h"
 
-#include <fcntl.h>
-#include <sys/stat.h>
-
 #include <array>
 #include <cctype>
 #include <fstream>
 #include <sstream>
 
 #include "db/memtable_list.h"
-#include "env/composite_env_wrapper.h"
-#include "file/random_access_file_reader.h"
-#include "file/sequence_file_reader.h"
-#include "file/writable_file_writer.h"
 #include "port/port.h"
-#include "rocksdb/convenience.h"
-#include "test_util/sync_point.h"
-#include "util/random.h"
+#include "util/file_reader_writer.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
+
+#ifdef OPENSSL
+#ifndef ROCKSDB_LITE
+const std::string TestKeyManager::default_key =
+    "\x12\x34\x56\x78\x12\x34\x56\x78\x12\x34\x56\x78\x12\x34\x56\x78\x12\x34"
+    "\x56\x78\x12\x34\x56\x78";
+const std::string TestKeyManager::default_iv =
+    "\xaa\xbb\xcc\xdd\xaa\xbb\xcc\xdd\xaa\xbb\xcc\xdd\xaa\xbb\xcc\xdd";
+#endif
+#endif
+
 namespace test {
 
 const uint32_t kDefaultFormatVersion = BlockBasedTableOptions().format_version;
-const uint32_t kLatestFormatVersion = 5u;
+const uint32_t kLatestFormatVersion = 4u;
+
+Slice RandomString(Random* rnd, int len, std::string* dst) {
+  dst->resize(len);
+  for (int i = 0; i < len; i++) {
+    (*dst)[i] = static_cast<char>(' ' + rnd->Uniform(95));  // ' ' .. '~'
+  }
+  return Slice(*dst);
+}
+
+extern std::string RandomHumanReadableString(Random* rnd, int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; ++i) {
+    ret[i] = static_cast<char>('a' + rnd->Uniform(26));
+  }
+  return ret;
+}
 
 std::string RandomKey(Random* rnd, int len, RandomKeyType type) {
   // Make sure to generate a wide variety of characters so we
@@ -64,7 +83,8 @@ extern Slice CompressibleString(Random* rnd, double compressed_fraction,
                                 int len, std::string* dst) {
   int raw = static_cast<int>(len * compressed_fraction);
   if (raw < 1) raw = 1;
-  std::string raw_data = rnd->RandomString(raw);
+  std::string raw_data;
+  RandomString(rnd, raw, &raw_data);
 
   // Duplicate the random data until we have filled "len" bytes
   dst->clear();
@@ -106,59 +126,6 @@ class Uint64ComparatorImpl : public Comparator {
 
   void FindShortSuccessor(std::string* /*key*/) const override { return; }
 };
-
-// A test implementation of comparator with 64-bit integer timestamp.
-class ComparatorWithU64TsImpl : public Comparator {
- public:
-  ComparatorWithU64TsImpl()
-      : Comparator(/*ts_sz=*/sizeof(uint64_t)),
-        cmp_without_ts_(BytewiseComparator()) {
-    assert(cmp_without_ts_);
-    assert(cmp_without_ts_->timestamp_size() == 0);
-  }
-  const char* Name() const override { return "ComparatorWithU64Ts"; }
-  void FindShortSuccessor(std::string*) const override {}
-  void FindShortestSeparator(std::string*, const Slice&) const override {}
-  int Compare(const Slice& a, const Slice& b) const override {
-    int ret = CompareWithoutTimestamp(a, b);
-    size_t ts_sz = timestamp_size();
-    if (ret != 0) {
-      return ret;
-    }
-    // Compare timestamp.
-    // For the same user key with different timestamps, larger (newer) timestamp
-    // comes first.
-    return -CompareTimestamp(ExtractTimestampFromUserKey(a, ts_sz),
-                             ExtractTimestampFromUserKey(b, ts_sz));
-  }
-  using Comparator::CompareWithoutTimestamp;
-  int CompareWithoutTimestamp(const Slice& a, bool a_has_ts, const Slice& b,
-                              bool b_has_ts) const override {
-    const size_t ts_sz = timestamp_size();
-    assert(!a_has_ts || a.size() >= ts_sz);
-    assert(!b_has_ts || b.size() >= ts_sz);
-    Slice lhs = a_has_ts ? StripTimestampFromUserKey(a, ts_sz) : a;
-    Slice rhs = b_has_ts ? StripTimestampFromUserKey(b, ts_sz) : b;
-    return cmp_without_ts_->Compare(lhs, rhs);
-  }
-  int CompareTimestamp(const Slice& ts1, const Slice& ts2) const override {
-    assert(ts1.size() == sizeof(uint64_t));
-    assert(ts2.size() == sizeof(uint64_t));
-    uint64_t lhs = DecodeFixed64(ts1.data());
-    uint64_t rhs = DecodeFixed64(ts2.data());
-    if (lhs < rhs) {
-      return -1;
-    } else if (lhs > rhs) {
-      return 1;
-    } else {
-      return 0;
-    }
-  }
-
- private:
-  const Comparator* cmp_without_ts_{nullptr};
-};
-
 }  // namespace
 
 const Comparator* Uint64Comparator() {
@@ -166,9 +133,22 @@ const Comparator* Uint64Comparator() {
   return &uint64comp;
 }
 
-const Comparator* ComparatorWithU64Ts() {
-  static ComparatorWithU64TsImpl comp_with_u64_ts;
-  return &comp_with_u64_ts;
+WritableFileWriter* GetWritableFileWriter(WritableFile* wf,
+                                          const std::string& fname) {
+  std::unique_ptr<WritableFile> file(wf);
+  return new WritableFileWriter(std::move(file), fname, EnvOptions());
+}
+
+RandomAccessFileReader* GetRandomAccessFileReader(RandomAccessFile* raf) {
+  std::unique_ptr<RandomAccessFile> file(raf);
+  return new RandomAccessFileReader(std::move(file),
+                                    "[test RandomAccessFileReader]");
+}
+
+SequentialFileReader* GetSequentialFileReader(SequentialFile* se,
+                                              const std::string& fname) {
+  std::unique_ptr<SequentialFile> file(se);
+  return new SequentialFileReader(std::move(file), fname);
 }
 
 void CorruptKeyType(InternalKey* ikey) {
@@ -184,16 +164,6 @@ std::string KeyStr(const std::string& user_key, const SequenceNumber& seq,
     CorruptKeyType(&k);
   }
   return k.Encode().ToString();
-}
-
-std::string KeyStr(uint64_t ts, const std::string& user_key,
-                   const SequenceNumber& seq, const ValueType& t,
-                   bool corrupt) {
-  std::string user_key_with_ts(user_key);
-  std::string ts_str;
-  PutFixed64(&ts_str, ts);
-  user_key_with_ts.append(ts_str);
-  return KeyStr(user_key_with_ts, seq, t, corrupt);
 }
 
 std::string RandomName(Random* rnd, const size_t len) {
@@ -300,10 +270,8 @@ void RandomInitDBOptions(DBOptions* db_opt, Random* rnd) {
   db_opt->error_if_exists = rnd->Uniform(2);
   db_opt->is_fd_close_on_exec = rnd->Uniform(2);
   db_opt->paranoid_checks = rnd->Uniform(2);
-  db_opt->track_and_verify_wals_in_manifest = rnd->Uniform(2);
   db_opt->skip_log_error_on_recovery = rnd->Uniform(2);
   db_opt->skip_stats_update_on_db_open = rnd->Uniform(2);
-  db_opt->skip_checking_sst_file_sizes_on_db_open = rnd->Uniform(2);
   db_opt->use_adaptive_mutex = rnd->Uniform(2);
   db_opt->use_fsync = rnd->Uniform(2);
   db_opt->recycle_log_file_num = rnd->Uniform(2);
@@ -361,15 +329,12 @@ void RandomInitCFOptions(ColumnFamilyOptions* cf_opt, DBOptions& db_options,
   cf_opt->force_consistency_checks = rnd->Uniform(2);
   cf_opt->compaction_options_fifo.allow_compaction = rnd->Uniform(2);
   cf_opt->memtable_whole_key_filtering = rnd->Uniform(2);
-  cf_opt->enable_blob_files = rnd->Uniform(2);
-  cf_opt->enable_blob_garbage_collection = rnd->Uniform(2);
 
   // double options
   cf_opt->hard_rate_limit = static_cast<double>(rnd->Uniform(10000)) / 13;
   cf_opt->soft_rate_limit = static_cast<double>(rnd->Uniform(10000)) / 13;
   cf_opt->memtable_prefix_bloom_size_ratio =
       static_cast<double>(rnd->Uniform(10000)) / 20000.0;
-  cf_opt->blob_garbage_collection_age_cutoff = rnd->Uniform(10000) / 10000.0;
 
   // int options
   cf_opt->level0_file_num_compaction_trigger = rnd->Uniform(100);
@@ -379,7 +344,6 @@ void RandomInitCFOptions(ColumnFamilyOptions* cf_opt, DBOptions& db_options,
   cf_opt->max_mem_compaction_level = rnd->Uniform(100);
   cf_opt->max_write_buffer_number = rnd->Uniform(100);
   cf_opt->max_write_buffer_number_to_maintain = rnd->Uniform(100);
-  cf_opt->max_write_buffer_size_to_maintain = rnd->Uniform(10000);
   cf_opt->min_write_buffer_number_to_merge = rnd->Uniform(100);
   cf_opt->num_levels = rnd->Uniform(100);
   cf_opt->target_file_size_multiplier = rnd->Uniform(100);
@@ -413,8 +377,6 @@ void RandomInitCFOptions(ColumnFamilyOptions* cf_opt, DBOptions& db_options,
       cf_opt->target_file_size_base * rnd->Uniform(100);
   cf_opt->compaction_options_fifo.max_table_files_size =
       uint_max + rnd->Uniform(10000);
-  cf_opt->min_blob_size = uint_max + rnd->Uniform(10000);
-  cf_opt->blob_file_size = uint_max + rnd->Uniform(10000);
 
   // unsigned int options
   cf_opt->rate_limit_delay_max_milliseconds = rnd->Uniform(10000);
@@ -433,7 +395,31 @@ void RandomInitCFOptions(ColumnFamilyOptions* cf_opt, DBOptions& db_options,
   cf_opt->compression = RandomCompressionType(rnd);
   RandomCompressionTypeVector(cf_opt->num_levels,
                               &cf_opt->compression_per_level, rnd);
-  cf_opt->blob_compression_type = RandomCompressionType(rnd);
+}
+
+Status DestroyDir(Env* env, const std::string& dir) {
+  Status s;
+  if (env->FileExists(dir).IsNotFound()) {
+    return s;
+  }
+  std::vector<std::string> files_in_dir;
+  s = env->GetChildren(dir, &files_in_dir);
+  if (s.ok()) {
+    for (auto& file_in_dir : files_in_dir) {
+      if (file_in_dir == "." || file_in_dir == "..") {
+        continue;
+      }
+      s = env->DeleteFile(dir + "/" + file_in_dir);
+      if (!s.ok()) {
+        break;
+      }
+    }
+  }
+
+  if (s.ok()) {
+    s = env->DeleteDir(dir);
+  }
+  return s;
 }
 
 bool IsDirectIOSupported(Env* env, const std::string& dir) {
@@ -450,26 +436,6 @@ bool IsDirectIOSupported(Env* env, const std::string& dir) {
     s = env->DeleteFile(tmp);
   }
   return s.ok();
-}
-
-bool IsPrefetchSupported(const std::shared_ptr<FileSystem>& fs,
-                         const std::string& dir) {
-  bool supported = false;
-  std::string tmp = TempFileName(dir, 999);
-  Random rnd(301);
-  std::string test_string = rnd.RandomString(4096);
-  Slice data(test_string);
-  Status s = WriteStringToFile(fs.get(), data, tmp, true);
-  if (s.ok()) {
-    std::unique_ptr<FSRandomAccessFile> file;
-    auto io_s = fs->NewRandomAccessFile(tmp, FileOptions(), &file, nullptr);
-    if (io_s.ok()) {
-      supported = !(file->Prefetch(0, data.size(), IOOptions(), nullptr)
-                        .IsNotSupported());
-    }
-    s = fs->DeleteFile(tmp, IOOptions(), nullptr);
-  }
-  return s.ok() && supported;
 }
 
 size_t GetLinesCount(const std::string& fname, const std::string& pattern) {
@@ -489,78 +455,5 @@ size_t GetLinesCount(const std::string& fname, const std::string& pattern) {
   return count;
 }
 
-Status CorruptFile(Env* env, const std::string& fname, int offset,
-                   int bytes_to_corrupt, bool verify_checksum /*=true*/) {
-  uint64_t size;
-  Status s = env->GetFileSize(fname, &size);
-  if (!s.ok()) {
-    return s;
-  } else if (offset < 0) {
-    // Relative to end of file; make it absolute
-    if (-offset > static_cast<int>(size)) {
-      offset = 0;
-    } else {
-      offset = static_cast<int>(size + offset);
-    }
-  }
-  if (offset > static_cast<int>(size)) {
-    offset = static_cast<int>(size);
-  }
-  if (offset + bytes_to_corrupt > static_cast<int>(size)) {
-    bytes_to_corrupt = static_cast<int>(size - offset);
-  }
-
-  // Do it
-  std::string contents;
-  s = ReadFileToString(env, fname, &contents);
-  if (s.ok()) {
-    for (int i = 0; i < bytes_to_corrupt; i++) {
-      contents[i + offset] ^= 0x80;
-    }
-    s = WriteStringToFile(env, contents, fname);
-  }
-  if (s.ok() && verify_checksum) {
-#ifndef ROCKSDB_LITE
-    Options options;
-    options.env = env;
-    EnvOptions env_options;
-    Status v = VerifySstFileChecksum(options, env_options, fname);
-    assert(!v.ok());
-#endif
-  }
-  return s;
-}
-
-Status TruncateFile(Env* env, const std::string& fname, uint64_t new_length) {
-  uint64_t old_length;
-  Status s = env->GetFileSize(fname, &old_length);
-  if (!s.ok() || new_length == old_length) {
-    return s;
-  }
-  // Do it
-  std::string contents;
-  s = ReadFileToString(env, fname, &contents);
-  if (s.ok()) {
-    contents.resize(static_cast<size_t>(new_length), 'b');
-    s = WriteStringToFile(env, contents, fname);
-  }
-  return s;
-}
-
-// Try and delete a directory if it exists
-Status TryDeleteDir(Env* env, const std::string& dirname) {
-  bool is_dir = false;
-  Status s = env->IsDirectory(dirname, &is_dir);
-  if (s.ok() && is_dir) {
-    s = env->DeleteDir(dirname);
-  }
-  return s;
-}
-
-// Delete a directory if it exists
-void DeleteDir(Env* env, const std::string& dirname) {
-  TryDeleteDir(env, dirname).PermitUncheckedError();
-}
-
 }  // namespace test
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

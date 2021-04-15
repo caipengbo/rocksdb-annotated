@@ -11,8 +11,8 @@
 #include "db/range_del_aggregator.h"
 #include "db/range_tombstone_fragmenter.h"
 #include "db/version_edit.h"
-#include "rocksdb/comparator.h"
-#include "rocksdb/types.h"
+#include "include/rocksdb/comparator.h"
+#include "include/rocksdb/types.h"
 #include "table/internal_iterator.h"
 #include "table/scoped_arena_iterator.h"
 #include "table/table_builder.h"
@@ -20,7 +20,7 @@
 #include "util/kv_map.h"
 #include "util/vector_iterator.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 TruncatedRangeDelIterator::TruncatedRangeDelIterator(
     std::unique_ptr<FragmentedRangeTombstoneIterator> iter,
@@ -33,22 +33,17 @@ TruncatedRangeDelIterator::TruncatedRangeDelIterator(
   if (smallest != nullptr) {
     pinned_bounds_.emplace_back();
     auto& parsed_smallest = pinned_bounds_.back();
-    Status pik_status = ParseInternalKey(smallest->Encode(), &parsed_smallest,
-                                         false /* log_err_key */);  // TODO
-    pik_status.PermitUncheckedError();
-    assert(pik_status.ok());
-
+    if (!ParseInternalKey(smallest->Encode(), &parsed_smallest)) {
+      assert(false);
+    }
     smallest_ = &parsed_smallest;
   }
   if (largest != nullptr) {
     pinned_bounds_.emplace_back();
     auto& parsed_largest = pinned_bounds_.back();
-
-    Status pik_status = ParseInternalKey(largest->Encode(), &parsed_largest,
-                                         false /* log_err_key */);  // TODO
-    pik_status.PermitUncheckedError();
-    assert(pik_status.ok());
-
+    if (!ParseInternalKey(largest->Encode(), &parsed_largest)) {
+      assert(false);
+    }
     if (parsed_largest.type == kTypeRangeDeletion &&
         parsed_largest.sequence == kMaxSequenceNumber) {
       // The file boundary has been artificially extended by a range tombstone.
@@ -486,4 +481,4 @@ CompactionRangeDelAggregator::NewIterator(const Slice* lower_bound,
           kMaxSequenceNumber /* upper_bound */));
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

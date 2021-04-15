@@ -18,7 +18,7 @@
 #include "rocksdb/slice.h"
 #include "util/stop_watch.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Comparator;
 class Iterator;
@@ -44,13 +44,12 @@ class MergeHelper {
   // Returns one of the following statuses:
   // - OK: Entries were successfully merged.
   // - Corruption: Merge operator reported unsuccessful merge.
-  static Status TimedFullMerge(const MergeOperator* merge_operator,
-                               const Slice& key, const Slice* value,
-                               const std::vector<Slice>& operands,
-                               std::string* result, Logger* logger,
-                               Statistics* statistics, Env* env,
-                               Slice* result_operand = nullptr,
-                               bool update_num_ops_stats = false);
+  static Status TimedFullMerge(
+      const MergeOperator* merge_operator, const Slice& key,
+      ValueType value_type, const Slice* value,
+      const std::vector<Slice>& operands, ValueType* result_value_type,
+      std::string* result, Logger* logger, Statistics* statistics, Env* env,
+      Slice* result_operand = nullptr, bool update_num_ops_stats = false);
 
   // Merge entries until we hit
   //     - a corrupted key
@@ -66,8 +65,6 @@ class MergeHelper {
   //                   0 means no restriction
   // at_bottom:   (IN) true if the iterator covers the bottem level, which means
   //                   we could reach the start of the history of this user key.
-  // allow_data_in_errors: (IN) if true, data details will be displayed in
-  //                   error/log messages.
   //
   // Returns one of the following statuses:
   // - OK: Entries were successfully merged.
@@ -82,8 +79,7 @@ class MergeHelper {
   Status MergeUntil(InternalIterator* iter,
                     CompactionRangeDelAggregator* range_del_agg = nullptr,
                     const SequenceNumber stop_before = 0,
-                    const bool at_bottom = false,
-                    const bool allow_data_in_errors = false);
+                    const bool at_bottom = false);
 
   // Filters a merge operand using the compaction filter specified
   // in the constructor. Returns the decision that the filter made.
@@ -194,4 +190,4 @@ class MergeOutputIterator {
   std::vector<Slice>::const_reverse_iterator it_values_;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+} // namespace rocksdb

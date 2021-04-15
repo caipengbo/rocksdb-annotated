@@ -7,7 +7,7 @@
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 void PersistentCacheHelper::InsertRawPage(
     const PersistentCacheOptions& cache_options, const BlockHandle& handle,
@@ -21,8 +21,7 @@ void PersistentCacheHelper::InsertRawPage(
                                           cache_options.key_prefix.size(),
                                           handle, cache_key);
   // insert content to cache
-  cache_options.persistent_cache->Insert(key, data, size)
-      .PermitUncheckedError();
+  cache_options.persistent_cache->Insert(key, data, size);
 }
 
 void PersistentCacheHelper::InsertUncompressedPage(
@@ -40,10 +39,8 @@ void PersistentCacheHelper::InsertUncompressedPage(
                                           cache_options.key_prefix.size(),
                                           handle, cache_key);
   // insert block contents to page cache
-  cache_options.persistent_cache
-      ->Insert(key, contents.data.data(), contents.data.size())
-      .PermitUncheckedError();
-  ;
+  cache_options.persistent_cache->Insert(key, contents.data.data(),
+                                         contents.data.size());
 }
 
 Status PersistentCacheHelper::LookupRawPage(
@@ -113,4 +110,4 @@ Status PersistentCacheHelper::LookupUncompressedPage(
   return Status::OK();
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

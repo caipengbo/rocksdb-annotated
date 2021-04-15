@@ -11,7 +11,7 @@
 #include <string>
 #include <thread>
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace test {
 
 ::testing::AssertionResult AssertStatus(const char* s_expr, const Status& s) {
@@ -26,7 +26,7 @@ namespace test {
 std::string TmpDir(Env* env) {
   std::string dir;
   Status s = env->GetTestDirectory(&dir);
-  EXPECT_OK(s);
+  EXPECT_TRUE(s.ok()) << s.ToString();
   return dir;
 }
 
@@ -53,4 +53,4 @@ int RandomSeed() {
 }
 
 }  // namespace test
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

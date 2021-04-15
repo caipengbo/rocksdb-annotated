@@ -15,8 +15,8 @@
 #include <nmmintrin.h>
 #include <wmmintrin.h>
 #endif
-#include "port/lang.h"
 #include "util/coding.h"
+#include "util/util.h"
 
 #include "util/crc32c_arm64.h"
 
@@ -25,9 +25,7 @@
 #include "util/crc32c_ppc_constants.h"
 
 #if __linux__
-#ifdef ROCKSDB_AUXV_GETAUXVAL_PRESENT
 #include <sys/auxv.h>
-#endif
 
 #ifndef PPC_FEATURE2_VEC_CRYPTO
 #define PPC_FEATURE2_VEC_CRYPTO 0x02000000
@@ -37,19 +35,11 @@
 #define AT_HWCAP2 26
 #endif
 
-#elif __FreeBSD__
-#include <machine/cpu.h>
-#include <sys/auxv.h>
-#include <sys/elf_common.h>
 #endif /* __linux__ */
 
 #endif
 
-#if defined(HAVE_ARM64_CRC)
-bool pmull_runtime_flag = false;
-#endif
-
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace crc32c {
 
 #if defined(HAVE_POWER8) && defined(HAS_ALTIVEC)
@@ -350,9 +340,6 @@ static inline void Slow_CRC32(uint64_t* l, uint8_t const **p) {
   table0_[c >> 24];
 }
 
-#if (!(defined(HAVE_POWER8) && defined(HAS_ALTIVEC))) && \
-        (!defined(HAVE_ARM64_CRC)) ||                    \
-    defined(NO_THREEWAY_CRC32C)
 static inline void Fast_CRC32(uint64_t* l, uint8_t const **p) {
 #ifndef HAVE_SSE42
   Slow_CRC32(l, p);
@@ -366,7 +353,6 @@ static inline void Fast_CRC32(uint64_t* l, uint8_t const **p) {
   *p += 4;
 #endif
 }
-#endif
 
 template<void (*CRC32)(uint64_t*, uint8_t const**)>
 uint32_t ExtendImpl(uint32_t crc, const char* buf, size_t size) {
@@ -465,21 +451,9 @@ uint32_t ExtendPPCImpl(uint32_t crc, const char *buf, size_t size) {
 static int arch_ppc_probe(void) {
   arch_ppc_crc32 = 0;
 
-#if defined(__powerpc64__) && defined(ROCKSDB_AUXV_GETAUXVAL_PRESENT)
+#if defined(__powerpc64__)
   if (getauxval(AT_HWCAP2) & PPC_FEATURE2_VEC_CRYPTO) arch_ppc_crc32 = 1;
 #endif /* __powerpc64__ */
-
-  return arch_ppc_crc32;
-}
-#elif __FreeBSD__
-static int arch_ppc_probe(void) {
-  unsigned long cpufeatures;
-  arch_ppc_crc32 = 0;
-
-#if defined(__powerpc64__)
-  elf_aux_info(AT_HWCAP2, &cpufeatures, sizeof(cpufeatures));
-  if (cpufeatures & PPC_FEATURE2_HAS_VEC_CRYPTO) arch_ppc_crc32 = 1;
-#endif  /* __powerpc64__ */
 
   return arch_ppc_crc32;
 }
@@ -518,7 +492,6 @@ std::string IsFastCrc32Supported() {
   if (crc32c_runtime_check()) {
     has_fast_crc = true;
     arch = "Arm64";
-    pmull_runtime_flag = crc32c_pmull_runtime_check();
   } else {
     has_fast_crc = false;
     arch = "Arm64";
@@ -750,29 +723,29 @@ uint32_t crc32c_3way(uint32_t crc, const char* buf, size_t len) {
           do {
             // jumps here for a full block of len 128
             CRCtriplet(crc, next, -128);
-            FALLTHROUGH_INTENDED;
+	    FALLTHROUGH_INTENDED;
             case 127:
               // jumps here or below for the first block smaller
               CRCtriplet(crc, next, -127);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 126:
               CRCtriplet(crc, next, -126); // than 128
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 125:
               CRCtriplet(crc, next, -125);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 124:
               CRCtriplet(crc, next, -124);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 123:
               CRCtriplet(crc, next, -123);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 122:
               CRCtriplet(crc, next, -122);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 121:
               CRCtriplet(crc, next, -121);
-              FALLTHROUGH_INTENDED;
+	      FALLTHROUGH_INTENDED;
             case 120:
               CRCtriplet(crc, next, -120);
               FALLTHROUGH_INTENDED;
@@ -1249,7 +1222,6 @@ static inline Function Choose_Extend() {
   return isAltiVec() ? ExtendPPCImpl : ExtendImpl<Slow_CRC32>;
 #elif defined(HAVE_ARM64_CRC)
   if(crc32c_runtime_check()) {
-    pmull_runtime_flag = crc32c_pmull_runtime_check();
     return ExtendARMImpl;
   } else {
     return ExtendImpl<Slow_CRC32>;
@@ -1280,4 +1252,4 @@ uint32_t Extend(uint32_t crc, const char* buf, size_t size) {
 
 
 }  // namespace crc32c
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
