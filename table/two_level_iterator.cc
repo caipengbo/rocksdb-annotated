@@ -15,7 +15,7 @@
 #include "table/block_based/block.h"
 #include "table/format.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 
@@ -42,10 +42,6 @@ class TwoLevelIndexIterator : public InternalIteratorBase<IndexValue> {
   Slice key() const override {
     assert(Valid());
     return second_level_iter_.key();
-  }
-  Slice user_key() const override {
-    assert(Valid());
-    return second_level_iter_.user_key();
   }
   IndexValue value() const override {
     assert(Valid());
@@ -212,4 +208,4 @@ InternalIteratorBase<IndexValue>* NewTwoLevelIterator(
     InternalIteratorBase<IndexValue>* first_level_iter) {
   return new TwoLevelIndexIterator(state, first_level_iter);
 }
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

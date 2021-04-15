@@ -10,7 +10,7 @@
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 const uint64_t kBlockSize = 1024;
@@ -27,7 +27,7 @@ class BlockCacheTracerTest : public testing::Test {
  public:
   BlockCacheTracerTest() {
     test_path_ = test::PerThreadDBPath("block_cache_tracer_test");
-    env_ = ROCKSDB_NAMESPACE::Env::Default();
+    env_ = rocksdb::Env::Default();
     EXPECT_OK(env_->CreateDir(test_path_));
     trace_file_path_ = test_path_ + "/block_cache_trace";
   }
@@ -52,7 +52,6 @@ class BlockCacheTracerTest : public testing::Test {
         return TableReaderCaller::kUserIterator;
     }
     assert(false);
-    return TableReaderCaller::kMaxBlockCacheLookupCaller;
   }
 
   void WriteBlockAccess(BlockCacheTraceWriter* writer, uint32_t from_key_id,
@@ -201,8 +200,8 @@ TEST_F(BlockCacheTracerTest, AtomicWrite) {
     BlockCacheTraceReader reader(std::move(trace_reader));
     BlockCacheTraceHeader header;
     ASSERT_OK(reader.ReadHeader(&header));
-    ASSERT_EQ(kMajorVersion, static_cast<int>(header.rocksdb_major_version));
-    ASSERT_EQ(kMinorVersion, static_cast<int>(header.rocksdb_minor_version));
+    ASSERT_EQ(kMajorVersion, header.rocksdb_major_version);
+    ASSERT_EQ(kMinorVersion, header.rocksdb_minor_version);
     VerifyAccess(&reader, 0, TraceType::kBlockTraceDataBlock, 1);
     ASSERT_NOK(reader.ReadAccess(&record));
   }
@@ -245,8 +244,8 @@ TEST_F(BlockCacheTracerTest, AtomicNoWriteAfterEndTrace) {
     BlockCacheTraceReader reader(std::move(trace_reader));
     BlockCacheTraceHeader header;
     ASSERT_OK(reader.ReadHeader(&header));
-    ASSERT_EQ(kMajorVersion, static_cast<int>(header.rocksdb_major_version));
-    ASSERT_EQ(kMinorVersion, static_cast<int>(header.rocksdb_minor_version));
+    ASSERT_EQ(kMajorVersion, header.rocksdb_major_version);
+    ASSERT_EQ(kMinorVersion, header.rocksdb_minor_version);
     VerifyAccess(&reader, 0, TraceType::kBlockTraceDataBlock, 1);
     ASSERT_NOK(reader.ReadAccess(&record));
   }
@@ -308,8 +307,8 @@ TEST_F(BlockCacheTracerTest, MixedBlocks) {
     BlockCacheTraceReader reader(std::move(trace_reader));
     BlockCacheTraceHeader header;
     ASSERT_OK(reader.ReadHeader(&header));
-    ASSERT_EQ(kMajorVersion, static_cast<int>(header.rocksdb_major_version));
-    ASSERT_EQ(kMinorVersion, static_cast<int>(header.rocksdb_minor_version));
+    ASSERT_EQ(kMajorVersion, header.rocksdb_major_version);
+    ASSERT_EQ(kMinorVersion, header.rocksdb_minor_version);
     // Read blocks.
     VerifyAccess(&reader, 0, TraceType::kBlockTraceUncompressionDictBlock, 10);
     VerifyAccess(&reader, 10, TraceType::kBlockTraceDataBlock, 10);
@@ -322,56 +321,7 @@ TEST_F(BlockCacheTracerTest, MixedBlocks) {
   }
 }
 
-TEST_F(BlockCacheTracerTest, HumanReadableTrace) {
-  BlockCacheTraceRecord record = GenerateAccessRecord();
-  record.get_id = 1;
-  record.referenced_key = "";
-  record.caller = TableReaderCaller::kUserGet;
-  record.get_from_user_specified_snapshot = Boolean::kTrue;
-  record.referenced_data_size = kReferencedDataSize;
-  PutFixed32(&record.referenced_key, 111);
-  PutLengthPrefixedSlice(&record.referenced_key, "get_key");
-  PutFixed64(&record.referenced_key, 2 << 8);
-  PutLengthPrefixedSlice(&record.block_key, "block_key");
-  PutVarint64(&record.block_key, 333);
-  {
-    // Generate a human readable trace file.
-    BlockCacheHumanReadableTraceWriter writer;
-    ASSERT_OK(writer.NewWritableFile(trace_file_path_, env_));
-    ASSERT_OK(writer.WriteHumanReadableTraceRecord(record, 1, 1));
-    ASSERT_OK(env_->FileExists(trace_file_path_));
-  }
-  {
-    BlockCacheHumanReadableTraceReader reader(trace_file_path_);
-    BlockCacheTraceHeader header;
-    BlockCacheTraceRecord read_record;
-    ASSERT_OK(reader.ReadHeader(&header));
-    ASSERT_OK(reader.ReadAccess(&read_record));
-    ASSERT_EQ(TraceType::kBlockTraceDataBlock, read_record.block_type);
-    ASSERT_EQ(kBlockSize, read_record.block_size);
-    ASSERT_EQ(kCFId, read_record.cf_id);
-    ASSERT_EQ(kDefaultColumnFamilyName, read_record.cf_name);
-    ASSERT_EQ(TableReaderCaller::kUserGet, read_record.caller);
-    ASSERT_EQ(kLevel, read_record.level);
-    ASSERT_EQ(kSSTFDNumber, read_record.sst_fd_number);
-    ASSERT_EQ(Boolean::kFalse, read_record.is_cache_hit);
-    ASSERT_EQ(Boolean::kFalse, read_record.no_insert);
-    ASSERT_EQ(1, read_record.get_id);
-    ASSERT_EQ(Boolean::kTrue, read_record.get_from_user_specified_snapshot);
-    ASSERT_EQ(Boolean::kTrue, read_record.referenced_key_exist_in_block);
-    ASSERT_EQ(kNumKeysInBlock, read_record.num_keys_in_block);
-    ASSERT_EQ(kReferencedDataSize, read_record.referenced_data_size);
-    ASSERT_EQ(record.block_key.size(), read_record.block_key.size());
-    ASSERT_EQ(record.referenced_key.size(), record.referenced_key.size());
-    ASSERT_EQ(112, BlockCacheTraceHelper::GetTableId(read_record));
-    ASSERT_EQ(3, BlockCacheTraceHelper::GetSequenceNumber(read_record));
-    ASSERT_EQ(333, BlockCacheTraceHelper::GetBlockOffsetInFile(read_record));
-    // Read again should fail.
-    ASSERT_NOK(reader.ReadAccess(&read_record));
-  }
-}
-
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

@@ -6,8 +6,9 @@
 #include "test_util/testharness.h"
 #include "utilities/cassandra/serialize.h"
 
+using namespace rocksdb::cassandra;
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 namespace cassandra {
 
 TEST(SerializeTest, SerializeI64) {
@@ -179,7 +180,7 @@ TEST(SerializeTest, DeserializeI8) {
 }
 
 } // namespace cassandra
-}  // namespace ROCKSDB_NAMESPACE
+} // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

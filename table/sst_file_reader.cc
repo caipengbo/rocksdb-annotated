@@ -7,17 +7,15 @@
 
 #include "rocksdb/sst_file_reader.h"
 
-#include "db/arena_wrapped_db_iter.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
-#include "env/composite_env_wrapper.h"
-#include "file/random_access_file_reader.h"
 #include "options/cf_options.h"
 #include "table/get_context.h"
 #include "table/table_builder.h"
 #include "table/table_reader.h"
+#include "util/file_reader_writer.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 struct SstFileReader::Rep {
   Options options;
@@ -49,8 +47,7 @@ Status SstFileReader::Open(const std::string& file_path) {
     s = r->options.env->NewRandomAccessFile(file_path, &file, r->soptions);
   }
   if (s.ok()) {
-    file_reader.reset(new RandomAccessFileReader(
-        NewLegacyRandomAccessFileWrapper(file), file_path));
+    file_reader.reset(new RandomAccessFileReader(std::move(file), file_path));
   }
   if (s.ok()) {
     TableReaderOptions t_opt(r->ioptions, r->moptions.prefix_extractor.get(),
@@ -63,24 +60,18 @@ Status SstFileReader::Open(const std::string& file_path) {
   return s;
 }
 
-Iterator* SstFileReader::NewIterator(const ReadOptions& roptions) {
+Iterator* SstFileReader::NewIterator(const ReadOptions& options) {
   auto r = rep_.get();
-  auto sequence = roptions.snapshot != nullptr
-                      ? roptions.snapshot->GetSequenceNumber()
+  auto sequence = options.snapshot != nullptr
+                      ? options.snapshot->GetSequenceNumber()
                       : kMaxSequenceNumber;
-  ArenaWrappedDBIter* res = new ArenaWrappedDBIter();
-  res->Init(r->options.env, roptions, r->ioptions, r->moptions,
-            nullptr /* version */, sequence,
-            r->moptions.max_sequential_skip_in_iterations,
-            0 /* version_number */, nullptr /* read_callback */,
-            nullptr /* db_impl */, nullptr /* cfd */,
-            true /* expose_blob_index */, false /* allow_refresh */);
   auto internal_iter = r->table_reader->NewIterator(
-      res->GetReadOptions(), r->moptions.prefix_extractor.get(),
-      res->GetArena(), false /* skip_filters */,
-      TableReaderCaller::kSSTFileReader);
-  res->SetIterUnderDBIter(internal_iter);
-  return res;
+      options, r->moptions.prefix_extractor.get(), /*arena=*/nullptr,
+      /*skip_filters=*/false, TableReaderCaller::kSSTFileReader);
+  return NewDBIterator(r->options.env, options, r->ioptions, r->moptions,
+                       r->ioptions.user_comparator, internal_iter, sequence,
+                       r->moptions.max_sequential_skip_in_iterations,
+                       nullptr /* read_callback */);
 }
 
 std::shared_ptr<const TableProperties> SstFileReader::GetTableProperties()
@@ -88,11 +79,10 @@ std::shared_ptr<const TableProperties> SstFileReader::GetTableProperties()
   return rep_->table_reader->GetTableProperties();
 }
 
-Status SstFileReader::VerifyChecksum(const ReadOptions& read_options) {
-  return rep_->table_reader->VerifyChecksum(read_options,
-                                            TableReaderCaller::kSSTFileReader);
+Status SstFileReader::VerifyChecksum() {
+  return rep_->table_reader->VerifyChecksum(TableReaderCaller::kSSTFileReader);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // !ROCKSDB_LITE

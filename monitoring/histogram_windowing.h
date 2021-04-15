@@ -12,7 +12,7 @@
 #include "monitoring/histogram.h"
 #include "rocksdb/env.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class HistogramWindowingImpl : public Histogram
 {
@@ -44,11 +44,7 @@ public:
   virtual double StandardDeviation() const override;
   virtual void Data(HistogramData* const data) const override;
 
-#ifndef NDEBUG
-  void TEST_UpdateEnv(Env* env) { env_ = env; }
-#endif  // NDEBUG
-
- private:
+private:
   void TimerTick();
   void SwapHistoryBucket();
   inline uint64_t current_window() const {
@@ -81,4 +77,4 @@ public:
   uint64_t min_num_per_window_ = 0;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

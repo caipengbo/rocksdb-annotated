@@ -9,7 +9,7 @@
 #include "rocksdb/perf_context.h"
 #include "test_util/testharness.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class TimedEnvTest : public testing::Test {
 };
@@ -21,12 +21,12 @@ TEST_F(TimedEnvTest, BasicTest) {
   std::unique_ptr<Env> mem_env(NewMemEnv(Env::Default()));
   std::unique_ptr<Env> timed_env(NewTimedEnv(mem_env.get()));
   std::unique_ptr<WritableFile> writable_file;
-  ASSERT_OK(timed_env->NewWritableFile("f", &writable_file, EnvOptions()));
+  timed_env->NewWritableFile("f", &writable_file, EnvOptions());
 
   ASSERT_GT(get_perf_context()->env_new_writable_file_nanos, 0);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

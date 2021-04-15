@@ -17,7 +17,7 @@
 #include "rocksdb/transaction_log.h"
 #include "rocksdb/types.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class LogFileImpl : public LogFile {
  public:
@@ -63,7 +63,7 @@ class TransactionLogIteratorImpl : public TransactionLogIterator {
       const TransactionLogIterator::ReadOptions& read_options,
       const EnvOptions& soptions, const SequenceNumber seqNum,
       std::unique_ptr<VectorLogPtr> files, VersionSet const* const versions,
-      const bool seq_per_batch, const std::shared_ptr<IOTracer>& io_tracer);
+      const bool seq_per_batch);
 
   virtual bool Valid() override;
 
@@ -86,7 +86,6 @@ class TransactionLogIteratorImpl : public TransactionLogIterator {
   size_t current_file_index_;
   std::unique_ptr<WriteBatch> current_batch_;
   std::unique_ptr<log::Reader> current_log_reader_;
-  std::string scratch_;
   Status OpenLogFile(const LogFile* log_file,
                      std::unique_ptr<SequentialFileReader>* file);
 
@@ -108,7 +107,7 @@ class TransactionLogIteratorImpl : public TransactionLogIterator {
   VersionSet const* const versions_;
   const bool seq_per_batch_;
   // Reads from transaction log only if the writebatch record has been written
-  bool RestrictedRead(Slice* record);
+  bool RestrictedRead(Slice* record, std::string* scratch);
   // Seeks to startingSequenceNumber reading from startFileIndex in files_.
   // If strict is set,then must get a batch starting with startingSequenceNumber
   void SeekToStartSequence(uint64_t start_file_index = 0, bool strict = false);
@@ -122,7 +121,6 @@ class TransactionLogIteratorImpl : public TransactionLogIterator {
   // Update current batch if a continuous batch is found, else return false
   void UpdateCurrentWriteBatch(const Slice& record);
   Status OpenLogReader(const LogFile* file);
-  std::shared_ptr<IOTracer> io_tracer_;
 };
-}  // namespace ROCKSDB_NAMESPACE
+}  //  namespace rocksdb
 #endif  // ROCKSDB_LITE

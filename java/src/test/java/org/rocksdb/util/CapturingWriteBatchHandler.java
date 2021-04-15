@@ -156,10 +156,8 @@ public class CapturingWriteBatchHandler extends WriteBatch.Handler {
 
     @Override
     public int hashCode() {
-      int result = Objects.hash(action, columnFamilyId);
-      result = 31 * result + Arrays.hashCode(key);
-      result = 31 * result + Arrays.hashCode(value);
-      return result;
+
+      return Objects.hash(action, columnFamilyId, key, value);
     }
   }
 

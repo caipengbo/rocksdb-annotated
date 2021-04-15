@@ -23,7 +23,7 @@
 #include "rocksdb/write_batch.h"
 #include "rocksdb/write_batch_base.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class ColumnFamilyHandle;
 class Comparator;
@@ -40,13 +40,12 @@ enum WriteType {
   kDeleteRangeRecord,
   kLogDataRecord,
   kXIDRecord,
-  kUnknownRecord,
 };
 
 // an entry for Put, Merge, Delete, or SingleDelete entry for write batches.
 // Used in WBWIIterator.
 struct WriteEntry {
-  WriteType type = kUnknownRecord;
+  WriteType type;
   Slice key;
   Slice value;
 };
@@ -101,8 +100,6 @@ class WriteBatchWithIndex : public WriteBatchBase {
       size_t max_bytes = 0);
 
   ~WriteBatchWithIndex() override;
-  WriteBatchWithIndex(WriteBatchWithIndex&&);
-  WriteBatchWithIndex& operator=(WriteBatchWithIndex&&);
 
   using WriteBatchBase::Put;
   Status Put(ColumnFamilyHandle* column_family, const Slice& key,
@@ -174,8 +171,7 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // the write batch update finishes. The state may recover after Next() is
   // called.
   Iterator* NewIteratorWithBase(ColumnFamilyHandle* column_family,
-                                Iterator* base_iterator,
-                                const ReadOptions* opts = nullptr);
+                                Iterator* base_iterator);
   // default column family
   Iterator* NewIteratorWithBase(Iterator* base_iterator);
 
@@ -274,6 +270,6 @@ class WriteBatchWithIndex : public WriteBatchBase {
   std::unique_ptr<Rep> rep;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // !ROCKSDB_LITE

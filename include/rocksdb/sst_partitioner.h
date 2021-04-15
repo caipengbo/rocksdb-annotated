@@ -9,10 +9,9 @@
 #include <memory>
 #include <string>
 
-#include "rocksdb/rocksdb_namespace.h"
 #include "rocksdb/slice.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Slice;
 
@@ -132,4 +131,4 @@ class SstPartitionerFixedPrefixFactory : public SstPartitionerFactory {
 extern std::shared_ptr<SstPartitionerFactory>
 NewSstPartitionerFixedPrefixFactory(size_t prefix_len);
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

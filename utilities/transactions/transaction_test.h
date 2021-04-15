@@ -5,33 +5,32 @@
 
 #pragma once
 
-#include <algorithm>
 #include <cinttypes>
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <thread>
 
 #include "db/db_impl/db_impl.h"
-#include "db/db_test_util.h"
-#include "port/port.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "table/mock_table.h"
+#include "test_util/fault_injection_test_env.h"
 #include "test_util/sync_point.h"
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
 #include "test_util/transaction_test_util.h"
 #include "util/random.h"
 #include "util/string_util.h"
-#include "utilities/fault_injection_env.h"
 #include "utilities/merge_operators.h"
 #include "utilities/merge_operators/string_append/stringappend.h"
 #include "utilities/transactions/pessimistic_transaction_db.h"
-#include "utilities/transactions/write_unprepared_txn_db.h"
 
-namespace ROCKSDB_NAMESPACE {
+#include "port/port.h"
+
+namespace rocksdb {
 
 // Return true if the ith bit is set in combination represented by comb
 bool IsInCombination(size_t i, size_t comb) { return comb & (size_t(1) << i); }
@@ -41,7 +40,6 @@ enum WriteOrdering : bool { kOrderedWrite, kUnorderedWrite };
 class TransactionTestBase : public ::testing::Test {
  public:
   TransactionDB* db;
-  SpecialEnv special_env;
   FaultInjectionTestEnv* env;
   std::string dbname;
   Options options;
@@ -52,40 +50,30 @@ class TransactionTestBase : public ::testing::Test {
   TransactionTestBase(bool use_stackable_db, bool two_write_queue,
                       TxnDBWritePolicy write_policy,
                       WriteOrdering write_ordering)
-      : db(nullptr),
-        special_env(Env::Default()),
-        env(nullptr),
-        use_stackable_db_(use_stackable_db) {
+      : db(nullptr), env(nullptr), use_stackable_db_(use_stackable_db) {
     options.create_if_missing = true;
     options.max_write_buffer_number = 2;
     options.write_buffer_size = 4 * 1024;
     options.unordered_write = write_ordering == kUnorderedWrite;
     options.level0_file_num_compaction_trigger = 2;
     options.merge_operator = MergeOperators::CreateFromStringId("stringappend");
-    special_env.skip_fsync_ = true;
-    env = new FaultInjectionTestEnv(&special_env);
+    env = new FaultInjectionTestEnv(Env::Default());
     options.env = env;
     options.two_write_queues = two_write_queue;
     dbname = test::PerThreadDBPath("transaction_testdb");
 
-    EXPECT_OK(DestroyDB(dbname, options));
+    DestroyDB(dbname, options);
     txn_db_options.transaction_lock_timeout = 0;
     txn_db_options.default_lock_timeout = 0;
     txn_db_options.write_policy = write_policy;
     txn_db_options.rollback_merge_operands = true;
-    // This will stress write unprepared, by forcing write batch flush on every
-    // write.
-    txn_db_options.default_write_batch_flush_threshold = 1;
-    // Write unprepared requires all transactions to be named. This setting
-    // autogenerates the name so that existing tests can pass.
-    txn_db_options.autogenerate_name = true;
     Status s;
     if (use_stackable_db == false) {
       s = TransactionDB::Open(options, txn_db_options, dbname, &db);
     } else {
       s = OpenWithStackableDB();
     }
-    EXPECT_OK(s);
+    assert(s.ok());
   }
 
   ~TransactionTestBase() {
@@ -96,7 +84,7 @@ class TransactionTestBase : public ::testing::Test {
     // unlink-ed files. By using the default fs we simply ignore errors resulted
     // from attempting to delete such files in DestroyDB.
     options.env = Env::Default();
-    EXPECT_OK(DestroyDB(dbname, options));
+    DestroyDB(dbname, options);
     delete env;
   }
 
@@ -134,7 +122,7 @@ class TransactionTestBase : public ::testing::Test {
     } else {
       s = OpenWithStackableDB(cfs, handles);
     }
-    assert(!s.ok() || db != nullptr);
+    assert(db != nullptr);
     return s;
   }
 
@@ -175,6 +163,8 @@ class TransactionTestBase : public ::testing::Test {
     }
     if (!s.ok()) {
       delete stackable_db;
+      // just in case it was not deleted (and not set to nullptr).
+      delete root_db;
     }
     return s;
   }
@@ -210,6 +200,8 @@ class TransactionTestBase : public ::testing::Test {
     delete handles[0];
     if (!s.ok()) {
       delete stackable_db;
+      // just in case it was not deleted (and not set to nullptr).
+      delete root_db;
     }
     return s;
   }
@@ -281,20 +273,13 @@ class TransactionTestBase : public ::testing::Test {
     if (txn_db_options.write_policy == TxnDBWritePolicy::WRITE_COMMITTED) {
       // Consume one seq per key
       exp_seq += 4;
-    } else if (txn_db_options.write_policy ==
-               TxnDBWritePolicy::WRITE_PREPARED) {
+    } else {
       // Consume one seq per batch
       exp_seq++;
       if (options.two_write_queues) {
         // Consume one seq for commit
         exp_seq++;
       }
-    } else {
-      // Flushed after each key, consume one seq per flushed batch
-      exp_seq += 4;
-      // WriteUnprepared implements CommitWithoutPrepareInternal by simply
-      // calling Prepare then Commit. Consume one seq for the prepare.
-      exp_seq++;
     }
     delete txn;
     with_empty_commits++;
@@ -318,15 +303,9 @@ class TransactionTestBase : public ::testing::Test {
     if (txn_db_options.write_policy == TxnDBWritePolicy::WRITE_COMMITTED) {
       // Consume one seq per key
       exp_seq += 5;
-    } else if (txn_db_options.write_policy ==
-               TxnDBWritePolicy::WRITE_PREPARED) {
+    } else {
       // Consume one seq per batch
       exp_seq++;
-      // Consume one seq per commit marker
-      exp_seq++;
-    } else {
-      // Flushed after each key, consume one seq per flushed batch
-      exp_seq += 5;
       // Consume one seq per commit marker
       exp_seq++;
     }
@@ -351,19 +330,9 @@ class TransactionTestBase : public ::testing::Test {
     if (txn_db_options.write_policy == TxnDBWritePolicy::WRITE_COMMITTED) {
       // No seq is consumed for deleting the txn buffer
       exp_seq += 0;
-    } else if (txn_db_options.write_policy ==
-               TxnDBWritePolicy::WRITE_PREPARED) {
+    } else {
       // Consume one seq per batch
       exp_seq++;
-      // Consume one seq per rollback batch
-      exp_seq++;
-      if (options.two_write_queues) {
-        // Consume one seq for rollback commit
-        exp_seq++;
-      }
-    } else {
-      // Flushed after each key, consume one seq per flushed batch
-      exp_seq += 5;
       // Consume one seq per rollback batch
       exp_seq++;
       if (options.two_write_queues) {
@@ -391,7 +360,7 @@ class TransactionTestBase : public ::testing::Test {
     if (txn_db_options.write_policy == WRITE_COMMITTED) {
       options.unordered_write = false;
     }
-    ASSERT_OK(ReOpen());
+    ReOpen();
 
     for (int i = 0; i < 1024; i++) {
       auto istr = std::to_string(index);
@@ -410,9 +379,9 @@ class TransactionTestBase : public ::testing::Test {
         case 1: {
           WriteBatch wb;
           committed_kvs[k] = v;
-          ASSERT_OK(wb.Put(k, v));
+          wb.Put(k, v);
           committed_kvs[k] = v2;
-          ASSERT_OK(wb.Put(k, v2));
+          wb.Put(k, v2);
           ASSERT_OK(db->Write(write_options, &wb));
 
         } break;
@@ -432,7 +401,7 @@ class TransactionTestBase : public ::testing::Test {
           delete txn;
           break;
         default:
-          FAIL();
+          assert(0);
       }
 
       index++;
@@ -442,12 +411,12 @@ class TransactionTestBase : public ::testing::Test {
     if (txn_db_options.write_policy == WRITE_COMMITTED) {
       options.unordered_write = false;
     }
-    auto db_impl = static_cast_with_check<DBImpl>(db->GetRootDB());
+    auto db_impl = reinterpret_cast<DBImpl*>(db->GetRootDB());
     // Before upgrade/downgrade the WAL must be emptied
     if (empty_wal) {
-      ASSERT_OK(db_impl->TEST_FlushMemTable());
+      db_impl->TEST_FlushMemTable();
     } else {
-      ASSERT_OK(db_impl->FlushWAL(true));
+      db_impl->FlushWAL(true);
     }
     auto s = ReOpenNoDelete();
     if (empty_wal) {
@@ -458,10 +427,10 @@ class TransactionTestBase : public ::testing::Test {
       ASSERT_TRUE(s.IsNotSupported());
       return;
     }
-    db_impl = static_cast_with_check<DBImpl>(db->GetRootDB());
+    db_impl = reinterpret_cast<DBImpl*>(db->GetRootDB());
     // Check that WAL is empty
     VectorLogPtr log_files;
-    ASSERT_OK(db_impl->GetSortedWalFiles(log_files));
+    db_impl->GetSortedWalFiles(log_files);
     ASSERT_EQ(0, log_files.size());
 
     for (auto& kv : committed_kvs) {
@@ -519,4 +488,4 @@ class MySQLStyleTransactionTest
   const bool with_slow_threads_;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

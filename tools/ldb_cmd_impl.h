@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class CompactorCommand : public LDBCommand {
  public:
@@ -136,7 +136,7 @@ class DBLoaderCommand : public LDBCommand {
   static void Help(std::string& ret);
   virtual void DoCommand() override;
 
-  virtual void OverrideBaseOptions() override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
  private:
   bool disable_wal_;
@@ -171,41 +171,6 @@ class ManifestDumpCommand : public LDBCommand {
   static const std::string ARG_PATH;
 };
 
-class FileChecksumDumpCommand : public LDBCommand {
- public:
-  static std::string Name() { return "file_checksum_dump"; }
-
-  FileChecksumDumpCommand(const std::vector<std::string>& params,
-                          const std::map<std::string, std::string>& options,
-                          const std::vector<std::string>& flags);
-
-  static void Help(std::string& ret);
-  void DoCommand() override;
-
-  bool NoDBOpen() override { return true; }
-
- private:
-  std::string path_;
-  bool is_checksum_hex_;
-
-  static const std::string ARG_PATH;
-};
-
-class GetPropertyCommand : public LDBCommand {
- public:
-  static std::string Name() { return "get_property"; }
-
-  GetPropertyCommand(const std::vector<std::string>& params,
-                     const std::map<std::string, std::string>& options,
-                     const std::vector<std::string>& flags);
-
-  static void Help(std::string& ret);
-  void DoCommand() override;
-
- private:
-  std::string property_;
-};
-
 class ListColumnFamiliesCommand : public LDBCommand {
  public:
   static std::string Name() { return "list_column_families"; }
@@ -218,6 +183,9 @@ class ListColumnFamiliesCommand : public LDBCommand {
   virtual void DoCommand() override;
 
   virtual bool NoDBOpen() override { return true; }
+
+ private:
+  std::string dbname_;
 };
 
 class CreateColumnFamilyCommand : public LDBCommand {
@@ -262,7 +230,7 @@ class ReduceDBLevelsCommand : public LDBCommand {
                         const std::map<std::string, std::string>& options,
                         const std::vector<std::string>& flags);
 
-  virtual void OverrideBaseCFOptions(ColumnFamilyOptions* cf_opts) override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
   virtual void DoCommand() override;
 
@@ -294,7 +262,7 @@ class ChangeCompactionStyleCommand : public LDBCommand {
       const std::map<std::string, std::string>& options,
       const std::vector<std::string>& flags);
 
-  virtual void OverrideBaseCFOptions(ColumnFamilyOptions* cf_opts) override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
   virtual void DoCommand() override;
 
@@ -378,7 +346,7 @@ class BatchPutCommand : public LDBCommand {
 
   static void Help(std::string& ret);
 
-  virtual void OverrideBaseOptions() override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
  private:
   /**
@@ -453,7 +421,7 @@ class PutCommand : public LDBCommand {
 
   static void Help(std::string& ret);
 
-  virtual void OverrideBaseOptions() override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
  private:
   std::string key_;
@@ -527,8 +495,6 @@ class RepairCommand : public LDBCommand {
 
   virtual bool NoDBOpen() override { return true; }
 
-  virtual void OverrideBaseOptions() override;
-
   static void Help(std::string& ret);
 };
 
@@ -544,7 +510,6 @@ class BackupableCommand : public LDBCommand {
   std::string backup_dir_;
   int num_threads_;
   std::unique_ptr<Logger> logger_;
-  std::shared_ptr<Env> backup_env_guard_;
 
  private:
   static const std::string ARG_BACKUP_DIR;
@@ -586,7 +551,7 @@ class WriteExternalSstFilesCommand : public LDBCommand {
 
   virtual bool NoDBOpen() override { return false; }
 
-  virtual void OverrideBaseOptions() override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
   static void Help(std::string& ret);
 
@@ -606,7 +571,7 @@ class IngestExternalSstFilesCommand : public LDBCommand {
 
   virtual bool NoDBOpen() override { return false; }
 
-  virtual void OverrideBaseOptions() override;
+  virtual Options PrepareOptionsForOpenDB() override;
 
   static void Help(std::string& ret);
 
@@ -627,39 +592,4 @@ class IngestExternalSstFilesCommand : public LDBCommand {
   static const std::string ARG_WRITE_GLOBAL_SEQNO;
 };
 
-// Command that prints out range delete tombstones in SST files.
-class ListFileRangeDeletesCommand : public LDBCommand {
- public:
-  static std::string Name() { return "list_file_range_deletes"; }
-
-  ListFileRangeDeletesCommand(const std::map<std::string, std::string>& options,
-                              const std::vector<std::string>& flags);
-
-  void DoCommand() override;
-
-  static void Help(std::string& ret);
-
- private:
-  int max_keys_ = 1000;
-};
-
-// Command that removes the SST file forcibly from the manifest.
-class UnsafeRemoveSstFileCommand : public LDBCommand {
- public:
-  static std::string Name() { return "unsafe_remove_sst_file"; }
-
-  UnsafeRemoveSstFileCommand(const std::vector<std::string>& params,
-                             const std::map<std::string, std::string>& options,
-                             const std::vector<std::string>& flags);
-
-  static void Help(std::string& ret);
-
-  virtual void DoCommand() override;
-
-  virtual bool NoDBOpen() override { return true; }
-
- private:
-  uint64_t sst_file_number_;
-};
-
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

@@ -9,7 +9,7 @@
 
 #include "db/db_impl/db_impl.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
                          size_t max_num_ikeys,
@@ -37,12 +37,11 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
 
   DBImpl* idb = static_cast<DBImpl*>(db->GetRootDB());
   auto icmp = InternalKeyComparator(idb->GetOptions(cfh).comparator);
-  ReadOptions read_options;
   ReadRangeDelAggregator range_del_agg(&icmp,
                                        kMaxSequenceNumber /* upper_bound */);
   Arena arena;
-  ScopedArenaIterator iter(idb->NewInternalIterator(
-      read_options, &arena, &range_del_agg, kMaxSequenceNumber, cfh));
+  ScopedArenaIterator iter(idb->NewInternalIterator(&arena, &range_del_agg,
+                                                    kMaxSequenceNumber, cfh));
 
   if (!begin_key.empty()) {
     InternalKey ikey;
@@ -55,10 +54,9 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
   size_t num_keys = 0;
   for (; iter->Valid(); iter->Next()) {
     ParsedInternalKey ikey;
-    Status pik_status =
-        ParseInternalKey(iter->key(), &ikey, true /* log_err_key */);  // TODO
-    if (!pik_status.ok()) {
-      return pik_status;
+    if (!ParseInternalKey(iter->key(), &ikey)) {
+      return Status::Corruption("Internal Key [" + iter->key().ToString() +
+                                "] parse error!");
     }
 
     if (!end_key.empty() &&
@@ -77,6 +75,6 @@ Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
   return Status::OK();
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // ROCKSDB_LITE

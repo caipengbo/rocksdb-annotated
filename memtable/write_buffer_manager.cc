@@ -11,7 +11,7 @@
 #include <mutex>
 #include "util/coding.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 #ifndef ROCKSDB_LITE
 namespace {
 const size_t kSizeDummyEntry = 256 * 1024;
@@ -54,7 +54,6 @@ WriteBufferManager::WriteBufferManager(size_t _buffer_size,
       mutable_limit_(buffer_size_ * 7 / 8),
       memory_used_(0),
       memory_active_(0),
-      dummy_size_(0),
       cache_rep_(nullptr) {
 #ifndef ROCKSDB_LITE
   if (cache) {
@@ -70,9 +69,7 @@ WriteBufferManager::~WriteBufferManager() {
 #ifndef ROCKSDB_LITE
   if (cache_rep_) {
     for (auto* handle : cache_rep_->dummy_handles_) {
-      if (handle != nullptr) {
-        cache_rep_->cache_->Release(handle, true);
-      }
+      cache_rep_->cache_->Release(handle, true);
     }
   }
 #endif  // ROCKSDB_LITE
@@ -91,21 +88,11 @@ void WriteBufferManager::ReserveMemWithCache(size_t mem) {
   while (new_mem_used > cache_rep_->cache_allocated_size_) {
     // Expand size by at least 256KB.
     // Add a dummy record to the cache
-    Cache::Handle* handle = nullptr;
-    Status s =
-        cache_rep_->cache_->Insert(cache_rep_->GetNextCacheKey(), nullptr,
-                                   kSizeDummyEntry, nullptr, &handle);
-    s.PermitUncheckedError();  // TODO: What to do on error?
-    // We keep the handle even if insertion fails and a null handle is
-    // returned, so that when memory shrinks, we don't release extra
-    // entries from cache.
-    // Ideallly we should prevent this allocation from happening if
-    // this insertion fails. However, the callers to this code path
-    // are not able to handle failures properly. We'll need to improve
-    // it in the future.
+    Cache::Handle* handle;
+    cache_rep_->cache_->Insert(cache_rep_->GetNextCacheKey(), nullptr,
+                               kSizeDummyEntry, nullptr, &handle);
     cache_rep_->dummy_handles_.push_back(handle);
     cache_rep_->cache_allocated_size_ += kSizeDummyEntry;
-    dummy_size_.fetch_add(kSizeDummyEntry, std::memory_order_relaxed);
   }
 #else
   (void)mem;
@@ -132,17 +119,12 @@ void WriteBufferManager::FreeMemWithCache(size_t mem) {
   if (new_mem_used < cache_rep_->cache_allocated_size_ / 4 * 3 &&
       cache_rep_->cache_allocated_size_ - kSizeDummyEntry > new_mem_used) {
     assert(!cache_rep_->dummy_handles_.empty());
-    auto* handle = cache_rep_->dummy_handles_.back();
-    // If insert failed, handle is null so we should not release.
-    if (handle != nullptr) {
-      cache_rep_->cache_->Release(handle, true);
-    }
+    cache_rep_->cache_->Release(cache_rep_->dummy_handles_.back(), true);
     cache_rep_->dummy_handles_.pop_back();
     cache_rep_->cache_allocated_size_ -= kSizeDummyEntry;
-    dummy_size_.fetch_sub(kSizeDummyEntry, std::memory_order_relaxed);
   }
 #else
   (void)mem;
 #endif  // ROCKSDB_LITE
 }
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

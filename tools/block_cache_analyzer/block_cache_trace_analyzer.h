@@ -15,7 +15,7 @@
 #include "trace_replay/block_cache_tracer.h"
 #include "utilities/simulator_cache/cache_simulator.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // Statistics of a key refereneced by a Get.
 struct GetKeyInfo {
@@ -33,8 +33,6 @@ struct GetKeyInfo {
 // Statistics of a block.
 struct BlockAccessInfo {
   uint64_t block_id = 0;
-  uint64_t table_id = 0;
-  uint64_t block_offset = 0;
   uint64_t num_accesses = 0;
   uint64_t block_size = 0;
   uint64_t first_access_time = 0;
@@ -75,8 +73,6 @@ struct BlockAccessInfo {
     if (first_access_time == 0) {
       first_access_time = access.access_timestamp;
     }
-    table_id = BlockCacheTraceHelper::GetTableId(access);
-    block_offset = BlockCacheTraceHelper::GetBlockOffsetInFile(access);
     last_access_time = access.access_timestamp;
     block_size = access.block_size;
     caller_num_access_map[access.caller]++;
@@ -103,9 +99,7 @@ struct BlockAccessInfo {
         num_referenced_key_exist_in_block++;
         if (referenced_data_size > block_size && block_size != 0) {
           ParsedInternalKey internal_key;
-          Status s = ParseInternalKey(access.referenced_key, &internal_key,
-                                      false /* log_err_key */);  // TODO
-          assert(s.ok());  // TODO
+          ParseInternalKey(access.referenced_key, &internal_key);
         }
       } else {
         non_exist_key_num_access_map[access.referenced_key][access.caller]++;
@@ -147,7 +141,6 @@ class BlockCacheTraceAnalyzer {
       const std::string& trace_file_path, const std::string& output_dir,
       const std::string& human_readable_trace_file_path,
       bool compute_reuse_distance, bool mrc_only,
-      bool is_human_readable_trace_file,
       std::unique_ptr<BlockCacheTraceSimulator>&& cache_simulator);
   ~BlockCacheTraceAnalyzer() = default;
   // No copy and move.
@@ -291,7 +284,7 @@ class BlockCacheTraceAnalyzer {
   // The file is named
   // "block_type_user_access_only_reuse_window_reuse_timeline". The file format
   // is start_time,0,1,...,N where N equals trace_duration / reuse_window.
-  void WriteBlockReuseTimeline(const uint64_t reuse_window, bool user_access_only,
+  void WriteBlockReuseTimeline(uint64_t reuse_window, bool user_access_only,
                                TraceType block_type) const;
 
   // Write the Get spatical locality into csv files saved in 'output_dir'.
@@ -308,10 +301,6 @@ class BlockCacheTraceAnalyzer {
 
   void WriteCorrelationFeaturesForGet(uint32_t max_number_of_values) const;
 
-  void WriteSkewness(const std::string& label_str,
-                     const std::vector<uint64_t>& percent_buckets,
-                     TraceType target_block_type) const;
-
   const std::map<std::string, ColumnFamilyAccessInfoAggregate>&
   TEST_cf_aggregates_map() const {
     return cf_aggregates_map_;
@@ -323,8 +312,7 @@ class BlockCacheTraceAnalyzer {
   std::string BuildLabel(const std::set<std::string>& labels,
                          const std::string& cf_name, uint64_t fd,
                          uint32_t level, TraceType type,
-                         TableReaderCaller caller, uint64_t block_key,
-                         const BlockAccessInfo& block) const;
+                         TableReaderCaller caller, uint64_t block_key) const;
 
   void ComputeReuseDistance(BlockAccessInfo* info) const;
 
@@ -353,8 +341,7 @@ class BlockCacheTraceAnalyzer {
                          const std::string& /*block_key*/,
                          uint64_t /*block_key_id*/,
                          const BlockAccessInfo& /*block_access_info*/)>
-          block_callback,
-      std::set<std::string>* labels = nullptr) const;
+          block_callback) const;
 
   void UpdateFeatureVectors(
       const std::vector<uint64_t>& access_sequence_number_timeline,
@@ -368,13 +355,15 @@ class BlockCacheTraceAnalyzer {
       const std::map<std::string, Predictions>& label_predictions,
       uint32_t max_number_of_values) const;
 
-  ROCKSDB_NAMESPACE::Env* env_;
+  Status WriteHumanReadableTraceRecord(const BlockCacheTraceRecord& access,
+                                       uint64_t block_id, uint64_t get_key_id);
+
+  rocksdb::Env* env_;
   const std::string trace_file_path_;
   const std::string output_dir_;
   std::string human_readable_trace_file_path_;
   const bool compute_reuse_distance_;
   const bool mrc_only_;
-  const bool is_human_readable_trace_file_;
 
   BlockCacheTraceHeader header_;
   std::unique_ptr<BlockCacheTraceSimulator> cache_simulator_;
@@ -387,9 +376,10 @@ class BlockCacheTraceAnalyzer {
   MissRatioStats miss_ratio_stats_;
   uint64_t unique_block_id_ = 1;
   uint64_t unique_get_key_id_ = 1;
-  BlockCacheHumanReadableTraceWriter human_readable_trace_writer_;
+  char trace_record_buffer_[1024 * 1024];
+  std::unique_ptr<rocksdb::WritableFile> human_readable_trace_file_writer_;
 };
 
 int block_cache_trace_analyzer_tool(int argc, char** argv);
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

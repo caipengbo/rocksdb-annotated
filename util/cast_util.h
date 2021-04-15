@@ -4,10 +4,11 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #pragma once
-namespace ROCKSDB_NAMESPACE {
+
+namespace rocksdb {
 // The helper function to assert the move from dynamic_cast<> to
 // static_cast<> is correct. This function is to deal with legacy code.
-// It is not recommended to add new code to issue class casting. The preferred
+// It is not recommanded to add new code to issue class casting. The preferred
 // solution is to implement the functionality without a need of casting.
 template <class DestClass, class SrcClass>
 inline DestClass* static_cast_with_check(SrcClass* x) {
@@ -17,4 +18,4 @@ inline DestClass* static_cast_with_check(SrcClass* x) {
 #endif
   return ret;
 }
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

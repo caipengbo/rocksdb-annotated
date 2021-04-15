@@ -26,7 +26,7 @@
 #include "table/format.h"
 #include "util/hash.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // A BlockBasedFilterBlockBuilder is used to construct all of the filters for a
 // particular Table.  It generates a single string which is stored as
@@ -38,13 +38,10 @@ class BlockBasedFilterBlockBuilder : public FilterBlockBuilder {
  public:
   BlockBasedFilterBlockBuilder(const SliceTransform* prefix_extractor,
                                const BlockBasedTableOptions& table_opt);
-  // No copying allowed
-  BlockBasedFilterBlockBuilder(const BlockBasedFilterBlockBuilder&) = delete;
-  void operator=(const BlockBasedFilterBlockBuilder&) = delete;
 
   virtual bool IsBlockBased() override { return true; }
   virtual void StartBlock(uint64_t block_offset) override;
-  virtual void Add(const Slice& key_without_ts) override;
+  virtual void Add(const Slice& key) override;
   virtual size_t NumAdded() const override { return num_added_; }
   virtual Slice Finish(const BlockHandle& tmp, Status* status) override;
   using FilterBlockBuilder::Finish;
@@ -71,6 +68,10 @@ class BlockBasedFilterBlockBuilder : public FilterBlockBuilder {
   std::vector<Slice> tmp_entries_;  // policy_->CreateFilter() argument
   std::vector<uint32_t> filter_offsets_;
   size_t num_added_;  // Number of keys added
+
+  // No copying allowed
+  BlockBasedFilterBlockBuilder(const BlockBasedFilterBlockBuilder&);
+  void operator=(const BlockBasedFilterBlockBuilder&);
 };
 
 // A FilterBlockReader is used to parse filter from SST table.
@@ -80,14 +81,11 @@ class BlockBasedFilterBlockReader
  public:
   BlockBasedFilterBlockReader(const BlockBasedTable* t,
                               CachableEntry<BlockContents>&& filter_block);
-  // No copying allowed
-  BlockBasedFilterBlockReader(const BlockBasedFilterBlockReader&) = delete;
-  void operator=(const BlockBasedFilterBlockReader&) = delete;
 
   static std::unique_ptr<FilterBlockReader> Create(
-      const BlockBasedTable* table, const ReadOptions& ro,
-      FilePrefetchBuffer* prefetch_buffer, bool use_cache, bool prefetch,
-      bool pin, BlockCacheLookupContext* lookup_context);
+      const BlockBasedTable* table, FilePrefetchBuffer* prefetch_buffer,
+      bool use_cache, bool prefetch, bool pin,
+      BlockCacheLookupContext* lookup_context);
 
   bool IsBlockBased() override { return true; }
 
@@ -116,4 +114,4 @@ class BlockBasedFilterBlockReader
                 BlockCacheLookupContext* lookup_context) const;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

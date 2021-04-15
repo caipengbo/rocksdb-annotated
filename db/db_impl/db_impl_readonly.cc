@@ -5,15 +5,13 @@
 
 #include "db/db_impl/db_impl_readonly.h"
 
-#include "db/arena_wrapped_db_iter.h"
 #include "db/compacted_db_impl.h"
 #include "db/db_impl/db_impl.h"
 #include "db/db_iter.h"
 #include "db/merge_context.h"
 #include "monitoring/perf_context_imp.h"
-#include "util/cast_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 #ifndef ROCKSDB_LITE
 
@@ -36,7 +34,7 @@ Status DBImplReadOnly::Get(const ReadOptions& read_options,
   PERF_TIMER_GUARD(get_snapshot_time);
   Status s;
   SequenceNumber snapshot = versions_->LastSequence();
-  auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+  auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
   auto cfd = cfh->cfd();
   if (tracer_) {
     InstrumentedMutexLock lock(&trace_mutex_);
@@ -49,16 +47,14 @@ Status DBImplReadOnly::Get(const ReadOptions& read_options,
   SequenceNumber max_covering_tombstone_seq = 0;
   LookupKey lkey(key, snapshot);
   PERF_TIMER_STOP(get_snapshot_time);
-  if (super_version->mem->Get(lkey, pinnable_val->GetSelf(),
-                              /*timestamp=*/nullptr, &s, &merge_context,
+  if (super_version->mem->Get(lkey, pinnable_val->GetSelf(), &s, &merge_context,
                               &max_covering_tombstone_seq, read_options)) {
     pinnable_val->PinSelf();
     RecordTick(stats_, MEMTABLE_HIT);
   } else {
     PERF_TIMER_GUARD(get_from_output_files_time);
-    super_version->current->Get(read_options, lkey, pinnable_val,
-                                /*timestamp=*/nullptr, &s, &merge_context,
-                                &max_covering_tombstone_seq);
+    super_version->current->Get(read_options, lkey, pinnable_val, &s,
+                                &merge_context, &max_covering_tombstone_seq);
     RecordTick(stats_, MEMTABLE_MISS);
   }
   RecordTick(stats_, NUMBER_KEYS_READ);
@@ -71,7 +67,7 @@ Status DBImplReadOnly::Get(const ReadOptions& read_options,
 
 Iterator* DBImplReadOnly::NewIterator(const ReadOptions& read_options,
                                       ColumnFamilyHandle* column_family) {
-  auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+  auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
   auto cfd = cfh->cfd();
   SuperVersion* super_version = cfd->GetSuperVersion()->Ref();
   SequenceNumber latest_snapshot = versions_->LastSequence();
@@ -83,13 +79,12 @@ Iterator* DBImplReadOnly::NewIterator(const ReadOptions& read_options,
   ReadCallback* read_callback = nullptr;  // No read callback provided.
   auto db_iter = NewArenaWrappedDbIterator(
       env_, read_options, *cfd->ioptions(), super_version->mutable_cf_options,
-      super_version->current, read_seq,
+      read_seq,
       super_version->mutable_cf_options.max_sequential_skip_in_iterations,
       super_version->version_number, read_callback);
-  auto internal_iter = NewInternalIterator(
-      db_iter->GetReadOptions(), cfd, super_version, db_iter->GetArena(),
-      db_iter->GetRangeDelAggregator(), read_seq,
-      /* allow_unprepared_value */ true);
+  auto internal_iter =
+      NewInternalIterator(read_options, cfd, super_version, db_iter->GetArena(),
+                          db_iter->GetRangeDelAggregator(), read_seq);
   db_iter->SetIterUnderDBIter(internal_iter);
   return db_iter;
 }
@@ -112,17 +107,15 @@ Status DBImplReadOnly::NewIterators(
           : latest_snapshot;
 
   for (auto cfh : column_families) {
-    auto* cfd = static_cast_with_check<ColumnFamilyHandleImpl>(cfh)->cfd();
+    auto* cfd = reinterpret_cast<ColumnFamilyHandleImpl*>(cfh)->cfd();
     auto* sv = cfd->GetSuperVersion()->Ref();
     auto* db_iter = NewArenaWrappedDbIterator(
-        env_, read_options, *cfd->ioptions(), sv->mutable_cf_options,
-        sv->current, read_seq,
+        env_, read_options, *cfd->ioptions(), sv->mutable_cf_options, read_seq,
         sv->mutable_cf_options.max_sequential_skip_in_iterations,
         sv->version_number, read_callback);
-    auto* internal_iter = NewInternalIterator(
-        db_iter->GetReadOptions(), cfd, sv, db_iter->GetArena(),
-        db_iter->GetRangeDelAggregator(), read_seq,
-        /* allow_unprepared_value */ true);
+    auto* internal_iter =
+        NewInternalIterator(read_options, cfd, sv, db_iter->GetArena(),
+                            db_iter->GetRangeDelAggregator(), read_seq);
     db_iter->SetIterUnderDBIter(internal_iter);
     iterators->push_back(db_iter);
   }
@@ -130,38 +123,12 @@ Status DBImplReadOnly::NewIterators(
   return Status::OK();
 }
 
-namespace {
-// Return OK if dbname exists in the file system
-// or create_if_missing is false
-Status OpenForReadOnlyCheckExistence(const DBOptions& db_options,
-                                     const std::string& dbname) {
-  Status s;
-  if (!db_options.create_if_missing) {
-    // Attempt to read "CURRENT" file
-    const std::shared_ptr<FileSystem>& fs = db_options.env->GetFileSystem();
-    std::string manifest_path;
-    uint64_t manifest_file_number;
-    s = VersionSet::GetCurrentManifestPath(dbname, fs.get(), &manifest_path,
-                                           &manifest_file_number);
-    if (!s.ok()) {
-      return Status::NotFound(CurrentFileName(dbname), "does not exist");
-    }
-  }
-  return s;
-}
-}  // namespace
-
 Status DB::OpenForReadOnly(const Options& options, const std::string& dbname,
-                           DB** dbptr, bool /*error_if_wal_file_exists*/) {
-  // If dbname does not exist in the file system, should not do anything
-  Status s = OpenForReadOnlyCheckExistence(options, dbname);
-  if (!s.ok()) {
-    return s;
-  }
-
+                           DB** dbptr, bool /*error_if_log_file_exist*/) {
   *dbptr = nullptr;
 
   // Try to first open DB as fully compacted DB
+  Status s;
   s = CompactedDBImpl::Open(options, dbname, dbptr);
   if (s.ok()) {
     return s;
@@ -174,8 +141,7 @@ Status DB::OpenForReadOnly(const Options& options, const std::string& dbname,
       ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_options));
   std::vector<ColumnFamilyHandle*> handles;
 
-  s = DBImplReadOnly::OpenForReadOnlyWithoutCheck(
-      db_options, dbname, column_families, &handles, dbptr);
+  s = DB::OpenForReadOnly(db_options, dbname, column_families, &handles, dbptr);
   if (s.ok()) {
     assert(handles.size() == 1);
     // i can delete the handle since DBImpl is always holding a
@@ -189,23 +155,7 @@ Status DB::OpenForReadOnly(
     const DBOptions& db_options, const std::string& dbname,
     const std::vector<ColumnFamilyDescriptor>& column_families,
     std::vector<ColumnFamilyHandle*>* handles, DB** dbptr,
-    bool error_if_wal_file_exists) {
-  // If dbname does not exist in the file system, should not do anything
-  Status s = OpenForReadOnlyCheckExistence(db_options, dbname);
-  if (!s.ok()) {
-    return s;
-  }
-
-  return DBImplReadOnly::OpenForReadOnlyWithoutCheck(
-      db_options, dbname, column_families, handles, dbptr,
-      error_if_wal_file_exists);
-}
-
-Status DBImplReadOnly::OpenForReadOnlyWithoutCheck(
-    const DBOptions& db_options, const std::string& dbname,
-    const std::vector<ColumnFamilyDescriptor>& column_families,
-    std::vector<ColumnFamilyHandle*>* handles, DB** dbptr,
-    bool error_if_wal_file_exists) {
+    bool error_if_log_file_exist) {
   *dbptr = nullptr;
   handles->clear();
 
@@ -213,14 +163,14 @@ Status DBImplReadOnly::OpenForReadOnlyWithoutCheck(
   DBImplReadOnly* impl = new DBImplReadOnly(db_options, dbname);
   impl->mutex_.Lock();
   Status s = impl->Recover(column_families, true /* read only */,
-                           error_if_wal_file_exists);
+                           error_if_log_file_exist);
   if (s.ok()) {
     // set column family handles
     for (auto cf : column_families) {
       auto cfd =
           impl->versions_->GetColumnFamilySet()->GetColumnFamily(cf.name);
       if (cfd == nullptr) {
-        s = Status::InvalidArgument("Column family not found", cf.name);
+        s = Status::InvalidArgument("Column family not found: ", cf.name);
         break;
       }
       handles->push_back(new ColumnFamilyHandleImpl(cfd, impl, &impl->mutex_));
@@ -238,7 +188,7 @@ Status DBImplReadOnly::OpenForReadOnlyWithoutCheck(
     *dbptr = impl;
     for (auto* h : *handles) {
       impl->NewThreadStatusCfInfo(
-          static_cast_with_check<ColumnFamilyHandleImpl>(h)->cfd());
+          reinterpret_cast<ColumnFamilyHandleImpl*>(h)->cfd());
     }
   } else {
     for (auto h : *handles) {
@@ -254,7 +204,7 @@ Status DBImplReadOnly::OpenForReadOnlyWithoutCheck(
 
 Status DB::OpenForReadOnly(const Options& /*options*/,
                            const std::string& /*dbname*/, DB** /*dbptr*/,
-                           bool /*error_if_wal_file_exists*/) {
+                           bool /*error_if_log_file_exist*/) {
   return Status::NotSupported("Not supported in ROCKSDB_LITE.");
 }
 
@@ -262,9 +212,9 @@ Status DB::OpenForReadOnly(
     const DBOptions& /*db_options*/, const std::string& /*dbname*/,
     const std::vector<ColumnFamilyDescriptor>& /*column_families*/,
     std::vector<ColumnFamilyHandle*>* /*handles*/, DB** /*dbptr*/,
-    bool /*error_if_wal_file_exists*/) {
+    bool /*error_if_log_file_exist*/) {
   return Status::NotSupported("Not supported in ROCKSDB_LITE.");
 }
 #endif  // !ROCKSDB_LITE
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

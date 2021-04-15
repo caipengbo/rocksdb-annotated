@@ -7,57 +7,19 @@
 #include "table/plain/plain_table_factory.h"
 
 #include <stdint.h>
-
 #include <memory>
-
 #include "db/dbformat.h"
-#include "options/configurable_helper.h"
+#include "options/options_helper.h"
 #include "port/port.h"
 #include "rocksdb/convenience.h"
-#include "rocksdb/utilities/options_type.h"
 #include "table/plain/plain_table_builder.h"
 #include "table/plain/plain_table_reader.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
-static std::unordered_map<std::string, OptionTypeInfo> plain_table_type_info = {
-    {"user_key_len",
-     {offsetof(struct PlainTableOptions, user_key_len), OptionType::kUInt32T,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
-    {"bloom_bits_per_key",
-     {offsetof(struct PlainTableOptions, bloom_bits_per_key), OptionType::kInt,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
-    {"hash_table_ratio",
-     {offsetof(struct PlainTableOptions, hash_table_ratio), OptionType::kDouble,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
-    {"index_sparseness",
-     {offsetof(struct PlainTableOptions, index_sparseness), OptionType::kSizeT,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
-    {"huge_page_tlb_size",
-     {offsetof(struct PlainTableOptions, huge_page_tlb_size),
-      OptionType::kSizeT, OptionVerificationType::kNormal,
-      OptionTypeFlags::kNone}},
-    {"encoding_type",
-     {offsetof(struct PlainTableOptions, encoding_type),
-      OptionType::kEncodingType, OptionVerificationType::kNormal,
-      OptionTypeFlags::kNone}},
-    {"full_scan_mode",
-     {offsetof(struct PlainTableOptions, full_scan_mode), OptionType::kBoolean,
-      OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
-    {"store_index_in_file",
-     {offsetof(struct PlainTableOptions, store_index_in_file),
-      OptionType::kBoolean, OptionVerificationType::kNormal,
-      OptionTypeFlags::kNone}},
-};
-
-PlainTableFactory::PlainTableFactory(const PlainTableOptions& options)
-    : table_options_(options) {
-  ConfigurableHelper::RegisterOptions(*this, &table_options_,
-                                      &plain_table_type_info);
-}
+namespace rocksdb {
 
 Status PlainTableFactory::NewTableReader(
-    const ReadOptions& /*ro*/, const TableReaderOptions& table_reader_options,
+    const TableReaderOptions& table_reader_options,
     std::unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
     std::unique_ptr<TableReader>* table,
     bool /*prefetch_index_and_filter_in_cache*/) const {
@@ -84,11 +46,10 @@ TableBuilder* PlainTableFactory::NewTableBuilder(
       table_options_.index_sparseness, table_options_.bloom_bits_per_key,
       table_builder_options.column_family_name, 6,
       table_options_.huge_page_tlb_size, table_options_.hash_table_ratio,
-      table_options_.store_index_in_file, table_builder_options.db_id,
-      table_builder_options.db_session_id);
+      table_options_.store_index_in_file);
 }
 
-std::string PlainTableFactory::GetPrintableOptions() const {
+std::string PlainTableFactory::GetPrintableTableOptions() const {
   std::string ret;
   ret.reserve(20000);
   const int kBufferSize = 200;
@@ -121,19 +82,11 @@ std::string PlainTableFactory::GetPrintableOptions() const {
   return ret;
 }
 
-Status GetPlainTableOptionsFromString(const PlainTableOptions& table_options,
-                                      const std::string& opts_str,
-                                      PlainTableOptions* new_table_options) {
-  ConfigOptions config_options;
-  config_options.input_strings_escaped = false;
-  config_options.ignore_unknown_options = false;
-  config_options.invoke_prepare_options = false;
-  return GetPlainTableOptionsFromString(config_options, table_options, opts_str,
-                                        new_table_options);
+const PlainTableOptions& PlainTableFactory::table_options() const {
+  return table_options_;
 }
 
-Status GetPlainTableOptionsFromString(const ConfigOptions& config_options,
-                                      const PlainTableOptions& table_options,
+Status GetPlainTableOptionsFromString(const PlainTableOptions& table_options,
                                       const std::string& opts_str,
                                       PlainTableOptions* new_table_options) {
   std::unordered_map<std::string, std::string> opts_map;
@@ -141,15 +94,8 @@ Status GetPlainTableOptionsFromString(const ConfigOptions& config_options,
   if (!s.ok()) {
     return s;
   }
-
-  s = GetPlainTableOptionsFromMap(config_options, table_options, opts_map,
-                                  new_table_options);
-  // Translate any errors (NotFound, NotSupported, to InvalidArgument
-  if (s.ok() || s.IsInvalidArgument()) {
-    return s;
-  } else {
-    return Status::InvalidArgument(s.getState());
-  }
+  return GetPlainTableOptionsFromMap(table_options, opts_map,
+                                     new_table_options);
 }
 
 Status GetMemTableRepFactoryFromString(
@@ -165,7 +111,7 @@ Status GetMemTableRepFactoryFromString(
 
   MemTableRepFactory* mem_factory = nullptr;
 
-  if (opts_list[0] == "skip_list" || opts_list[0] == "SkipListFactory") {
+  if (opts_list[0] == "skip_list") {
     // Expecting format
     // skip_list:<lookahead>
     if (2 == len) {
@@ -174,8 +120,7 @@ Status GetMemTableRepFactoryFromString(
     } else if (1 == len) {
       mem_factory = new SkipListFactory();
     }
-  } else if (opts_list[0] == "prefix_hash" ||
-             opts_list[0] == "HashSkipListRepFactory") {
+  } else if (opts_list[0] == "prefix_hash") {
     // Expecting format
     // prfix_hash:<hash_bucket_count>
     if (2 == len) {
@@ -184,8 +129,7 @@ Status GetMemTableRepFactoryFromString(
     } else if (1 == len) {
       mem_factory = NewHashSkipListRepFactory();
     }
-  } else if (opts_list[0] == "hash_linkedlist" ||
-             opts_list[0] == "HashLinkListRepFactory") {
+  } else if (opts_list[0] == "hash_linkedlist") {
     // Expecting format
     // hash_linkedlist:<hash_bucket_count>
     if (2 == len) {
@@ -194,7 +138,7 @@ Status GetMemTableRepFactoryFromString(
     } else if (1 == len) {
       mem_factory = NewHashLinkListRepFactory();
     }
-  } else if (opts_list[0] == "vector" || opts_list[0] == "VectorRepFactory") {
+  } else if (opts_list[0] == "vector") {
     // Expecting format
     // vector:<count>
     if (2 == len) {
@@ -218,32 +162,60 @@ Status GetMemTableRepFactoryFromString(
   return Status::OK();
 }
 
+std::string ParsePlainTableOptions(const std::string& name,
+                                   const std::string& org_value,
+                                   PlainTableOptions* new_options,
+                                   bool input_strings_escaped = false,
+                                   bool ignore_unknown_options = false) {
+  const std::string& value =
+      input_strings_escaped ? UnescapeOptionString(org_value) : org_value;
+  const auto iter = plain_table_type_info.find(name);
+  if (iter == plain_table_type_info.end()) {
+    if (ignore_unknown_options) {
+      return "";
+    } else {
+      return "Unrecognized option";
+    }
+  }
+  const auto& opt_info = iter->second;
+  if (opt_info.verification != OptionVerificationType::kDeprecated &&
+      !ParseOptionHelper(reinterpret_cast<char*>(new_options) + opt_info.offset,
+                         opt_info.type, value)) {
+    return "Invalid value";
+  }
+  return "";
+}
+
 Status GetPlainTableOptionsFromMap(
     const PlainTableOptions& table_options,
     const std::unordered_map<std::string, std::string>& opts_map,
     PlainTableOptions* new_table_options, bool input_strings_escaped,
-    bool ignore_unknown_options) {
-  ConfigOptions config_options;
-  config_options.input_strings_escaped = input_strings_escaped;
-  config_options.ignore_unknown_options = ignore_unknown_options;
-  return GetPlainTableOptionsFromMap(config_options, table_options, opts_map,
-                                     new_table_options);
-}
-
-Status GetPlainTableOptionsFromMap(
-    const ConfigOptions& config_options, const PlainTableOptions& table_options,
-    const std::unordered_map<std::string, std::string>& opts_map,
-    PlainTableOptions* new_table_options) {
+    bool /*ignore_unknown_options*/) {
   assert(new_table_options);
-  PlainTableFactory ptf(table_options);
-  Status s = ptf.ConfigureFromMap(config_options, opts_map);
-  if (s.ok()) {
-    *new_table_options = *(ptf.GetOptions<PlainTableOptions>());
-  } else {
-    // Restore "new_options" to the default "base_options".
-    *new_table_options = table_options;
+  *new_table_options = table_options;
+  for (const auto& o : opts_map) {
+    auto error_message = ParsePlainTableOptions(
+        o.first, o.second, new_table_options, input_strings_escaped);
+    if (error_message != "") {
+      const auto iter = plain_table_type_info.find(o.first);
+      if (iter == plain_table_type_info.end() ||
+          !input_strings_escaped ||  // !input_strings_escaped indicates
+                                     // the old API, where everything is
+                                     // parsable.
+          (iter->second.verification != OptionVerificationType::kByName &&
+           iter->second.verification !=
+               OptionVerificationType::kByNameAllowNull &&
+           iter->second.verification !=
+               OptionVerificationType::kByNameAllowFromNull &&
+           iter->second.verification != OptionVerificationType::kDeprecated)) {
+        // Restore "new_options" to the default "base_options".
+        *new_table_options = table_options;
+        return Status::InvalidArgument("Can't parse PlainTableOptions:",
+                                       o.first + " " + error_message);
+      }
+    }
   }
-  return s;
+  return Status::OK();
 }
 
 extern TableFactory* NewPlainTableFactory(const PlainTableOptions& options) {
@@ -259,5 +231,5 @@ const std::string PlainTablePropertyNames::kBloomVersion =
 const std::string PlainTablePropertyNames::kNumBloomBlocks =
     "rocksdb.plain.table.bloom.numblocks";
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 #endif  // ROCKSDB_LITE

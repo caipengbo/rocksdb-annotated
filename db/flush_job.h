@@ -43,7 +43,7 @@
 #include "util/stop_watch.h"
 #include "util/thread_local.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class DBImpl;
 class MemTable;
@@ -60,20 +60,18 @@ class FlushJob {
   // IMPORTANT: mutable_cf_options needs to be alive while FlushJob is alive
   FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
            const ImmutableDBOptions& db_options,
-           const MutableCFOptions& mutable_cf_options, uint64_t max_memtable_id,
-           const FileOptions& file_options, VersionSet* versions,
-           InstrumentedMutex* db_mutex, std::atomic<bool>* shutting_down,
+           const MutableCFOptions& mutable_cf_options,
+           const uint64_t* max_memtable_id, const EnvOptions& env_options,
+           VersionSet* versions, InstrumentedMutex* db_mutex,
+           std::atomic<bool>* shutting_down,
            std::vector<SequenceNumber> existing_snapshots,
            SequenceNumber earliest_write_conflict_snapshot,
            SnapshotChecker* snapshot_checker, JobContext* job_context,
-           LogBuffer* log_buffer, FSDirectory* db_directory,
-           FSDirectory* output_file_directory,
-           CompressionType output_compression, Statistics* stats,
-           EventLogger* event_logger, bool measure_io_stats,
+           LogBuffer* log_buffer, Directory* db_directory,
+           Directory* output_file_directory, CompressionType output_compression,
+           Statistics* stats, EventLogger* event_logger, bool measure_io_stats,
            const bool sync_output_directory, const bool write_manifest,
-           Env::Priority thread_pri, const std::shared_ptr<IOTracer>& io_tracer,
-           const std::string& db_id = "", const std::string& db_session_id = "",
-           std::string full_history_ts_low = "");
+           Env::Priority thread_pri);
 
   ~FlushJob();
 
@@ -91,9 +89,6 @@ class FlushJob {
   }
 #endif  // !ROCKSDB_LITE
 
-  // Return the IO status
-  IOStatus io_status() const { return io_status_; }
-
  private:
   void ReportStartedFlush();
   void ReportFlushInputSize(const autovector<MemTable*>& mems);
@@ -104,17 +99,16 @@ class FlushJob {
 #endif  // !ROCKSDB_LITE
 
   const std::string& dbname_;
-  const std::string db_id_;
-  const std::string db_session_id_;
   ColumnFamilyData* cfd_;
   const ImmutableDBOptions& db_options_;
   const MutableCFOptions& mutable_cf_options_;
-  // A variable storing the largest memtable id to flush in this
+  // Pointer to a variable storing the largest memtable id to flush in this
   // flush job. RocksDB uses this variable to select the memtables to flush in
   // this job. All memtables in this column family with an ID smaller than or
-  // equal to max_memtable_id_ will be selected for flush.
-  uint64_t max_memtable_id_;
-  const FileOptions file_options_;
+  // equal to *max_memtable_id_ will be selected for flush. If null, then all
+  // memtables in the column family will be selected.
+  const uint64_t* max_memtable_id_;
+  const EnvOptions env_options_;
   VersionSet* versions_;
   InstrumentedMutex* db_mutex_;
   std::atomic<bool>* shutting_down_;
@@ -123,8 +117,8 @@ class FlushJob {
   SnapshotChecker* snapshot_checker_;
   JobContext* job_context_;
   LogBuffer* log_buffer_;
-  FSDirectory* db_directory_;
-  FSDirectory* output_file_directory_;
+  Directory* db_directory_;
+  Directory* output_file_directory_;
   CompressionType output_compression_;
   Statistics* stats_;
   EventLogger* event_logger_;
@@ -159,11 +153,6 @@ class FlushJob {
   Version* base_;
   bool pick_memtable_called;
   Env::Priority thread_pri_;
-  IOStatus io_status_;
-
-  const std::shared_ptr<IOTracer> io_tracer_;
-
-  const std::string full_history_ts_low_;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

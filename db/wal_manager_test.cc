@@ -18,13 +18,13 @@
 #include "db/version_set.h"
 #include "db/wal_manager.h"
 #include "env/mock_env.h"
-#include "file/writable_file_writer.h"
 #include "table/mock_table.h"
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
+#include "util/file_reader_writer.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // TODO(icanadi) mock out VersionSet
 // TODO(icanadi) move other WalManager-specific tests from db_test here
@@ -47,20 +47,17 @@ class WalManagerTest : public testing::Test {
                                       std::numeric_limits<uint64_t>::max());
     db_options_.wal_dir = dbname_;
     db_options_.env = env_.get();
-    db_options_.fs = env_->GetFileSystem();
 
-    versions_.reset(
-        new VersionSet(dbname_, &db_options_, env_options_, table_cache_.get(),
-                       &write_buffer_manager_, &write_controller_,
-                       /*block_cache_tracer=*/nullptr, /*io_tracer=*/nullptr));
+    versions_.reset(new VersionSet(dbname_, &db_options_, env_options_,
+                                   table_cache_.get(), &write_buffer_manager_,
+                                   &write_controller_,
+                                   /*block_cache_tracer=*/nullptr));
 
-    wal_manager_.reset(
-        new WalManager(db_options_, env_options_, nullptr /*IOTracer*/));
+    wal_manager_.reset(new WalManager(db_options_, env_options_));
   }
 
   void Reopen() {
-    wal_manager_.reset(
-        new WalManager(db_options_, env_options_, nullptr /*IOTracer*/));
+    wal_manager_.reset(new WalManager(db_options_, env_options_));
   }
 
   // NOT thread safe
@@ -68,10 +65,9 @@ class WalManagerTest : public testing::Test {
     assert(current_log_writer_.get() != nullptr);
     uint64_t seq =  versions_->LastSequence() + 1;
     WriteBatch batch;
-    ASSERT_OK(batch.Put(key, value));
+    batch.Put(key, value);
     WriteBatchInternal::SetSequence(&batch, seq);
-    ASSERT_OK(
-        current_log_writer_->AddRecord(WriteBatchInternal::Contents(&batch)));
+    current_log_writer_->AddRecord(WriteBatchInternal::Contents(&batch));
     versions_->SetLastAllocatedSequence(seq);
     versions_->SetLastPublishedSequence(seq);
     versions_->SetLastSequence(seq);
@@ -83,8 +79,8 @@ class WalManagerTest : public testing::Test {
     std::string fname = ArchivedLogFileName(dbname_, current_log_number_);
     std::unique_ptr<WritableFile> file;
     ASSERT_OK(env_->NewWritableFile(fname, &file, env_options_));
-    std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
-        NewLegacyWritableFileWrapper(std::move(file)), fname, env_options_));
+    std::unique_ptr<WritableFileWriter> file_writer(
+        new WritableFileWriter(std::move(file), fname, env_options_));
     current_log_writer_.reset(new log::Writer(std::move(file_writer), 0, false));
   }
 
@@ -134,14 +130,14 @@ TEST_F(WalManagerTest, ReadFirstRecordCache) {
       wal_manager_->TEST_ReadFirstRecord(kAliveLogFile, 1 /* number */, &s));
   ASSERT_EQ(s, 0U);
 
-  std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
-      NewLegacyWritableFileWrapper(std::move(file)), path, EnvOptions()));
+  std::unique_ptr<WritableFileWriter> file_writer(
+      new WritableFileWriter(std::move(file), path, EnvOptions()));
   log::Writer writer(std::move(file_writer), 1,
                      db_options_.recycle_log_file_num > 0);
   WriteBatch batch;
-  ASSERT_OK(batch.Put("foo", "bar"));
+  batch.Put("foo", "bar");
   WriteBatchInternal::SetSequence(&batch, 10);
-  ASSERT_OK(writer.AddRecord(WriteBatchInternal::Contents(&batch)));
+  writer.AddRecord(WriteBatchInternal::Contents(&batch));
 
   // TODO(icanadi) move SpecialEnv outside of db_test, so we can reuse it here.
   // Waiting for lei to finish with db_test
@@ -166,14 +162,14 @@ namespace {
 uint64_t GetLogDirSize(std::string dir_path, Env* env) {
   uint64_t dir_size = 0;
   std::vector<std::string> files;
-  EXPECT_OK(env->GetChildren(dir_path, &files));
+  env->GetChildren(dir_path, &files);
   for (auto& f : files) {
     uint64_t number;
     FileType type;
-    if (ParseFileName(f, &number, &type) && type == kWalFile) {
+    if (ParseFileName(f, &number, &type) && type == kLogFile) {
       std::string const file_path = dir_path + "/" + f;
       uint64_t file_size;
-      EXPECT_OK(env->GetFileSize(file_path, &file_size));
+      env->GetFileSize(file_path, &file_size);
       dir_size += file_size;
     }
   }
@@ -183,9 +179,9 @@ std::vector<std::uint64_t> ListSpecificFiles(
     Env* env, const std::string& path, const FileType expected_file_type) {
   std::vector<std::string> files;
   std::vector<uint64_t> file_numbers;
+  env->GetChildren(path, &files);
   uint64_t number;
   FileType type;
-  EXPECT_OK(env->GetChildren(path, &files));
   for (size_t i = 0; i < files.size(); ++i) {
     if (ParseFileName(files[i], &number, &type)) {
       if (type == expected_file_type) {
@@ -208,7 +204,6 @@ int CountRecords(TransactionLogIterator* iter) {
     EXPECT_OK(iter->status());
     iter->Next();
   }
-  EXPECT_OK(iter->status());
   return count;
 }
 }  // namespace
@@ -232,7 +227,7 @@ TEST_F(WalManagerTest, WALArchivalSizeLimit) {
   CreateArchiveLogs(20, 5000);
 
   std::vector<std::uint64_t> log_files =
-      ListSpecificFiles(env_.get(), archive_dir, kWalFile);
+      ListSpecificFiles(env_.get(), archive_dir, kLogFile);
   ASSERT_EQ(log_files.size(), 20U);
 
   db_options_.wal_size_limit_mb = 8;
@@ -247,7 +242,7 @@ TEST_F(WalManagerTest, WALArchivalSizeLimit) {
   Reopen();
   wal_manager_->PurgeObsoleteWALFiles();
 
-  log_files = ListSpecificFiles(env_.get(), archive_dir, kWalFile);
+  log_files = ListSpecificFiles(env_.get(), archive_dir, kLogFile);
   ASSERT_TRUE(log_files.empty());
 }
 
@@ -265,7 +260,7 @@ TEST_F(WalManagerTest, WALArchivalTtl) {
   CreateArchiveLogs(20, 5000);
 
   std::vector<uint64_t> log_files =
-      ListSpecificFiles(env_.get(), archive_dir, kWalFile);
+      ListSpecificFiles(env_.get(), archive_dir, kLogFile);
   ASSERT_GT(log_files.size(), 0U);
 
   db_options_.wal_ttl_seconds = 1;
@@ -273,7 +268,7 @@ TEST_F(WalManagerTest, WALArchivalTtl) {
   Reopen();
   wal_manager_->PurgeObsoleteWALFiles();
 
-  log_files = ListSpecificFiles(env_.get(), archive_dir, kWalFile);
+  log_files = ListSpecificFiles(env_.get(), archive_dir, kLogFile);
   ASSERT_TRUE(log_files.empty());
 }
 
@@ -298,7 +293,7 @@ TEST_F(WalManagerTest, TransactionLogIteratorJustEmptyFile) {
   // Check that an empty iterator is returned
   ASSERT_TRUE(!iter->Valid());
 }
-
+  
 TEST_F(WalManagerTest, TransactionLogIteratorNewFileWhileScanning) {
   Init();
   CreateArchiveLogs(2, 100);
@@ -312,7 +307,7 @@ TEST_F(WalManagerTest, TransactionLogIteratorNewFileWhileScanning) {
   // A new log file was added after the iterator was created.
   // TryAgain indicates a new iterator is needed to fetch the new data
   ASSERT_TRUE(iter->status().IsTryAgain());
-
+  
   iter = OpenTransactionLogIter(0);
   i = 0;
   for (; iter->Valid(); iter->Next()) {
@@ -322,7 +317,7 @@ TEST_F(WalManagerTest, TransactionLogIteratorNewFileWhileScanning) {
   ASSERT_TRUE(iter->status().ok());
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

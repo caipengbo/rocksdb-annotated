@@ -10,13 +10,9 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
-using namespace ROCKSDB_NAMESPACE;
+using namespace rocksdb;
 
-#if defined(OS_WIN)
-std::string kDBPath = "C:\\Windows\\TEMP\\rocksdb_simple_example";
-#else
 std::string kDBPath = "/tmp/rocksdb_simple_example";
-#endif
 
 int main() {
   DB* db;
@@ -28,7 +24,7 @@ int main() {
   options.create_if_missing = true;
 
   // open DB
-  Status s = DB::Open(options, kDBPath, &db);  // 其中会创建DB的实现类 DBImpl
+  Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
 
   // Put key-value
@@ -72,7 +68,7 @@ int main() {
   }
 
   PinnableSlice pinnable_val;
-  s = db->Get(ReadOptions(), db->DefaultColumnFamily(), "key1", &pinnable_val);
+  db->Get(ReadOptions(), db->DefaultColumnFamily(), "key1", &pinnable_val);
   assert(s.IsNotFound());
   // Reset PinnableSlice after each use and before each reuse
   pinnable_val.Reset();

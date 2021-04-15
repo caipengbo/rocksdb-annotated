@@ -9,8 +9,8 @@
 
 #include "util/rate_limiter.h"
 
-#include <chrono>
 #include <cinttypes>
+#include <chrono>
 #include <limits>
 
 #include "db/db_test_util.h"
@@ -19,7 +19,7 @@
 #include "test_util/testharness.h"
 #include "util/random.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // TODO(yhchiang): the rate will not be accurate when we run test in parallel.
 class RateLimiterTest : public testing::Test {};
@@ -59,6 +59,7 @@ TEST_F(RateLimiterTest, Modes) {
   }
 }
 
+#if !(defined(TRAVIS) && defined(OS_MACOSX))
 TEST_F(RateLimiterTest, Rate) {
   auto* env = Env::Default();
   struct Arg {
@@ -89,9 +90,6 @@ TEST_F(RateLimiterTest, Rate) {
     }
   };
 
-  int samples = 0;
-  int samples_at_minimum = 0;
-
   for (int i = 1; i <= 16; i *= 2) {
     int32_t target = i * 1024 * 10;
     Arg arg(target, i / 4 + 1);
@@ -119,34 +117,18 @@ TEST_F(RateLimiterTest, Rate) {
               arg.request_size - 1, target / 1024, rate / 1024,
               elapsed / 1000000.0);
 
-      ++samples;
-      if (rate / target >= 0.80) {
-        ++samples_at_minimum;
-      }
+      ASSERT_GE(rate / target, 0.80);
       ASSERT_LE(rate / target, 1.25);
     }
   }
-
-  // This can fail in heavily loaded CI environments
-  bool skip_minimum_rate_check =
-#if (defined(TRAVIS) || defined(CIRCLECI)) && defined(OS_MACOSX)
-      true;
-#else
-      getenv("SANDCASTLE");
-#endif
-  if (skip_minimum_rate_check) {
-    fprintf(stderr, "Skipped minimum rate check (%d / %d passed)\n",
-            samples_at_minimum, samples);
-  } else {
-    ASSERT_EQ(samples_at_minimum, samples);
-  }
 }
+#endif
 
 TEST_F(RateLimiterTest, LimitChangeTest) {
   // starvation test when limit changes to a smaller value
   int64_t refill_period = 1000 * 1000;
   auto* env = Env::Default();
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
   struct Arg {
     Arg(int32_t _request_size, Env::IOPriority _pri,
         std::shared_ptr<RateLimiter> _limiter)
@@ -170,7 +152,7 @@ TEST_F(RateLimiterTest, LimitChangeTest) {
           std::make_shared<GenericRateLimiter>(
               target, refill_period, 10, RateLimiter::Mode::kWritesOnly,
               Env::Default(), false /* auto_tuned */);
-      ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+      rocksdb::SyncPoint::GetInstance()->LoadDependency(
           {{"GenericRateLimiter::Request",
             "RateLimiterTest::LimitChangeTest:changeLimitStart"},
            {"RateLimiterTest::LimitChangeTest:changeLimitEnd",
@@ -198,7 +180,9 @@ TEST_F(RateLimiterTest, AutoTuneIncreaseWhenFull) {
   const std::chrono::seconds kTimePerRefill(1);
   const int kRefillsPerTune = 100;  // needs to match util/rate_limiter.cc
 
-  SpecialEnv special_env(Env::Default(), /*time_elapse_only_sleep*/ true);
+  SpecialEnv special_env(Env::Default());
+  special_env.no_slowdown_ = true;
+  special_env.time_elapse_only_sleep_ = true;
 
   auto stats = CreateDBStatistics();
   std::unique_ptr<RateLimiter> rate_limiter(new GenericRateLimiter(
@@ -210,12 +194,12 @@ TEST_F(RateLimiterTest, AutoTuneIncreaseWhenFull) {
   // has determined the bytes are not available; and (2) before Refill()
   // computes the next refill time (ensuring refill time in the future allows
   // the next request to drain the rate limiter).
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "GenericRateLimiter::Refill", [&](void* /*arg*/) {
         special_env.SleepForMicroseconds(static_cast<int>(
             std::chrono::microseconds(kTimePerRefill).count()));
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   // verify rate limit increases after a sequence of periods where rate limiter
   // is always drained
@@ -230,7 +214,7 @@ TEST_F(RateLimiterTest, AutoTuneIncreaseWhenFull) {
   int64_t new_bytes_per_sec = rate_limiter->GetSingleBurstBytes();
   ASSERT_GT(new_bytes_per_sec, orig_bytes_per_sec);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 
   // decreases after a sequence of periods where rate limiter is not drained
   orig_bytes_per_sec = new_bytes_per_sec;
@@ -243,7 +227,7 @@ TEST_F(RateLimiterTest, AutoTuneIncreaseWhenFull) {
   ASSERT_LT(new_bytes_per_sec, orig_bytes_per_sec);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

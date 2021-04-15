@@ -9,14 +9,48 @@
 #include <string>
 #include <vector>
 
+#include "db/db_test_util.h"
 #include "env/mock_env.h"
-#include "file/file_util.h"
-#include "rocksdb/convenience.h"
 #include "rocksdb/env.h"
-#include "rocksdb/env_encryption.h"
+#include "rocksdb/env_inspected.h"
 #include "test_util/testharness.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
+
+// Normalizes trivial differences across Envs such that these test cases can
+// run on all Envs.
+class NormalizingEnvWrapper : public EnvWrapper {
+ public:
+  explicit NormalizingEnvWrapper(Env* base) : EnvWrapper(base) {}
+
+  // Removes . and .. from directory listing
+  Status GetChildren(const std::string& dir,
+                     std::vector<std::string>* result) override {
+    Status status = EnvWrapper::GetChildren(dir, result);
+    if (status.ok()) {
+      result->erase(std::remove_if(result->begin(), result->end(),
+                                   [](const std::string& s) {
+                                     return s == "." || s == "..";
+                                   }),
+                    result->end());
+    }
+    return status;
+  }
+
+  // Removes . and .. from directory listing
+  Status GetChildrenFileAttributes(
+      const std::string& dir, std::vector<FileAttributes>* result) override {
+    Status status = EnvWrapper::GetChildrenFileAttributes(dir, result);
+    if (status.ok()) {
+      result->erase(std::remove_if(result->begin(), result->end(),
+                                   [](const FileAttributes& fa) {
+                                     return fa.name == "." || fa.name == "..";
+                                   }),
+                    result->end());
+    }
+    return status;
+  }
+};
 
 class EnvBasicTestWithParam : public testing::Test,
                               public ::testing::WithParamInterface<Env*> {
@@ -29,46 +63,83 @@ class EnvBasicTestWithParam : public testing::Test,
     test_dir_ = test::PerThreadDBPath(env_, "env_basic_test");
   }
 
-  void SetUp() override { ASSERT_OK(env_->CreateDirIfMissing(test_dir_)); }
+  void SetUp() override { env_->CreateDirIfMissing(test_dir_); }
 
-  void TearDown() override { ASSERT_OK(DestroyDir(env_, test_dir_)); }
+  void TearDown() override {
+    std::vector<std::string> files;
+    env_->GetChildren(test_dir_, &files);
+    for (const auto& file : files) {
+      // don't know whether it's file or directory, try both. The tests must
+      // only create files or empty directories, so one must succeed, else the
+      // directory's corrupted.
+      Status s = env_->DeleteFile(test_dir_ + "/" + file);
+      if (!s.ok()) {
+        ASSERT_OK(env_->DeleteDir(test_dir_ + "/" + file));
+      }
+    }
+  }
 };
 
 class EnvMoreTestWithParam : public EnvBasicTestWithParam {};
 
+static std::unique_ptr<Env> def_env(new NormalizingEnvWrapper(Env::Default()));
 INSTANTIATE_TEST_CASE_P(EnvDefault, EnvBasicTestWithParam,
-                        ::testing::Values(Env::Default()));
+                        ::testing::Values(def_env.get()));
 INSTANTIATE_TEST_CASE_P(EnvDefault, EnvMoreTestWithParam,
-                        ::testing::Values(Env::Default()));
+                        ::testing::Values(def_env.get()));
 
 static std::unique_ptr<Env> mock_env(new MockEnv(Env::Default()));
 INSTANTIATE_TEST_CASE_P(MockEnv, EnvBasicTestWithParam,
                         ::testing::Values(mock_env.get()));
-
-#ifndef ROCKSDB_LITE
-static Env* NewTestEncryptedEnv(Env* base, const std::string& provider_id) {
-  std::shared_ptr<EncryptionProvider> provider;
-  EXPECT_OK(EncryptionProvider::CreateFromString(ConfigOptions(), provider_id,
-                                                 &provider));
-  return NewEncryptedEnv(base, provider);
-}
-
-// next statements run env test against default encryption code.
-static std::unique_ptr<Env> ctr_encrypt_env(NewTestEncryptedEnv(Env::Default(),
-                                                                "test://CTR"));
-INSTANTIATE_TEST_CASE_P(EncryptedEnv, EnvBasicTestWithParam,
-                        ::testing::Values(ctr_encrypt_env.get()));
-INSTANTIATE_TEST_CASE_P(EncryptedEnv, EnvMoreTestWithParam,
-                        ::testing::Values(ctr_encrypt_env.get()));
-#endif  // ROCKSDB_LITE
-
 #ifndef ROCKSDB_LITE
 static std::unique_ptr<Env> mem_env(NewMemEnv(Env::Default()));
 INSTANTIATE_TEST_CASE_P(MemEnv, EnvBasicTestWithParam,
                         ::testing::Values(mem_env.get()));
 
-namespace {
+class DummyFileSystemInspector : public FileSystemInspector {
+ public:
+  DummyFileSystemInspector(size_t refill_bytes = 0)
+      : refill_bytes_(refill_bytes) {}
 
+  Status Read(size_t len, size_t* allowed) override {
+    assert(allowed);
+    if (refill_bytes_ == 0) {
+      *allowed = len;
+    } else {
+      *allowed = std::min(refill_bytes_, len);
+    }
+    return Status::OK();
+  }
+
+  Status Write(size_t len, size_t* allowed) override {
+    assert(allowed);
+    if (refill_bytes_ == 0) {
+      *allowed = len;
+    } else {
+      *allowed = std::min(refill_bytes_, len);
+    }
+    return Status::OK();
+  }
+
+ private:
+  size_t refill_bytes_;
+};
+
+static std::unique_ptr<Env> fs_inspected_env(
+    NewFileSystemInspectedEnv(new NormalizingEnvWrapper(Env::Default()),
+                              std::make_shared<DummyFileSystemInspector>(1)));
+INSTANTIATE_TEST_CASE_P(FileSystemInspectedEnv, EnvBasicTestWithParam,
+                        ::testing::Values(fs_inspected_env.get()));
+
+#ifdef OPENSSL
+std::shared_ptr<encryption::KeyManager> key_manager(new TestKeyManager);
+static std::unique_ptr<Env> key_managed_encrypted_env(NewKeyManagedEncryptedEnv(
+    new NormalizingEnvWrapper(Env::Default()), key_manager));
+INSTANTIATE_TEST_CASE_P(KeyManagedEncryptedEnv, EnvBasicTestWithParam,
+                        ::testing::Values(key_managed_encrypted_env.get()));
+#endif  // OPENSSL
+
+namespace {
 // Returns a vector of 0 or 1 Env*, depending whether an Env is registered for
 // TEST_ENV_URI.
 //
@@ -101,6 +172,52 @@ INSTANTIATE_TEST_CASE_P(CustomEnv, EnvMoreTestWithParam,
                         ::testing::ValuesIn(GetCustomEnvs()));
 
 #endif  // ROCKSDB_LITE
+
+TEST_P(EnvBasicTestWithParam, RenameCurrent) {
+  if (!getenv("ENCRYPTED_ENV")) {
+    return;
+  }
+  Slice result;
+  char scratch[100];
+  std::unique_ptr<SequentialFile> seq_file;
+  std::unique_ptr<WritableFile> writable_file;
+  std::vector<std::string> children;
+
+  // Create an encrypted `CURRENT` file so it shouldn't be skipped .
+  SyncPoint::GetInstance()->SetCallBack(
+      "KeyManagedEncryptedEnv::NewWritableFile", [&](void* arg) {
+        bool* skip = static_cast<bool*>(arg);
+        *skip = false;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  ASSERT_OK(
+      env_->NewWritableFile(test_dir_ + "/CURRENT", &writable_file, soptions_));
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+  SyncPoint::GetInstance()->DisableProcessing();
+  ASSERT_OK(writable_file->Append("MANIFEST-0"));
+  ASSERT_OK(writable_file->Close());
+  writable_file.reset();
+
+  ASSERT_OK(
+      env_->NewSequentialFile(test_dir_ + "/CURRENT", &seq_file, soptions_));
+  ASSERT_OK(seq_file->Read(100, &result, scratch));
+  ASSERT_EQ(0, result.compare("MANIFEST-0"));
+
+  // Create a plaintext `CURRENT` temp file.
+  ASSERT_OK(env_->NewWritableFile(test_dir_ + "/current.dbtmp.plain",
+                                  &writable_file, soptions_));
+  ASSERT_OK(writable_file->Append("MANIFEST-1"));
+  ASSERT_OK(writable_file->Close());
+  writable_file.reset();
+
+  ASSERT_OK(env_->RenameFile(test_dir_ + "/current.dbtmp.plain",
+                             test_dir_ + "/CURRENT"));
+
+  ASSERT_OK(
+      env_->NewSequentialFile(test_dir_ + "/CURRENT", &seq_file, soptions_));
+  ASSERT_OK(seq_file->Read(100, &result, scratch));
+  ASSERT_EQ(0, result.compare("MANIFEST-1"));
+}
 
 TEST_P(EnvBasicTestWithParam, Basics) {
   uint64_t file_size;
@@ -163,18 +280,19 @@ TEST_P(EnvBasicTestWithParam, Basics) {
                                        soptions_)
                    .ok());
   ASSERT_TRUE(!seq_file);
-  ASSERT_NOK(env_->NewRandomAccessFile(test_dir_ + "/non_existent", &rand_file,
-                                       soptions_));
+  ASSERT_TRUE(!env_->NewRandomAccessFile(test_dir_ + "/non_existent",
+                                         &rand_file, soptions_)
+                   .ok());
   ASSERT_TRUE(!rand_file);
 
   // Check that deleting works.
-  ASSERT_NOK(env_->DeleteFile(test_dir_ + "/non_existent"));
+  ASSERT_TRUE(!env_->DeleteFile(test_dir_ + "/non_existent").ok());
   ASSERT_OK(env_->DeleteFile(test_dir_ + "/g"));
   ASSERT_EQ(Status::NotFound(), env_->FileExists(test_dir_ + "/g"));
   ASSERT_OK(env_->GetChildren(test_dir_, &children));
   ASSERT_EQ(0U, children.size());
-  Status s = env_->GetChildren(test_dir_ + "/non_existent", &children);
-  ASSERT_TRUE(s.IsNotFound());
+  ASSERT_TRUE(
+      env_->GetChildren(test_dir_ + "/non_existent", &children).IsNotFound());
 }
 
 TEST_P(EnvBasicTestWithParam, ReadWrite) {
@@ -257,7 +375,7 @@ TEST_P(EnvBasicTestWithParam, LargeWrite) {
     read += result.size();
   }
   ASSERT_TRUE(write_data == read_data);
-  delete [] scratch;
+  delete[] scratch;
 }
 
 TEST_P(EnvMoreTestWithParam, GetModTime) {
@@ -270,7 +388,7 @@ TEST_P(EnvMoreTestWithParam, MakeDir) {
   ASSERT_OK(env_->CreateDir(test_dir_ + "/j"));
   ASSERT_OK(env_->FileExists(test_dir_ + "/j"));
   std::vector<std::string> children;
-  ASSERT_OK(env_->GetChildren(test_dir_, &children));
+  env_->GetChildren(test_dir_, &children);
   ASSERT_EQ(1U, children.size());
   // fail because file already exists
   ASSERT_TRUE(!env_->CreateDir(test_dir_ + "/j").ok());
@@ -299,14 +417,14 @@ TEST_P(EnvMoreTestWithParam, GetChildren) {
   ASSERT_EQ(3U, children.size());
   ASSERT_EQ(3U, childAttr.size());
   for (auto each : children) {
-    env_->DeleteDir(test_dir_ + "/" + each).PermitUncheckedError();
+    env_->DeleteDir(test_dir_ + "/" + each);
   }  // necessary for default POSIX env
 
   // non-exist directory returns IOError
   ASSERT_OK(env_->DeleteDir(test_dir_));
-  ASSERT_NOK(env_->FileExists(test_dir_));
-  ASSERT_NOK(env_->GetChildren(test_dir_, &children));
-  ASSERT_NOK(env_->GetChildrenFileAttributes(test_dir_, &childAttr));
+  ASSERT_TRUE(!env_->FileExists(test_dir_).ok());
+  ASSERT_TRUE(!env_->GetChildren(test_dir_, &children).ok());
+  ASSERT_TRUE(!env_->GetChildrenFileAttributes(test_dir_, &childAttr).ok());
 
   // if dir is a file, returns IOError
   ASSERT_OK(env_->CreateDir(test_dir_));
@@ -315,37 +433,11 @@ TEST_P(EnvMoreTestWithParam, GetChildren) {
       env_->NewWritableFile(test_dir_ + "/file", &writable_file, soptions_));
   ASSERT_OK(writable_file->Close());
   writable_file.reset();
-  ASSERT_NOK(env_->GetChildren(test_dir_ + "/file", &children));
+  ASSERT_TRUE(!env_->GetChildren(test_dir_ + "/file", &children).ok());
   ASSERT_EQ(0U, children.size());
 }
 
-TEST_P(EnvMoreTestWithParam, GetChildrenIgnoresDotAndDotDot) {
-  auto* env = Env::Default();
-  ASSERT_OK(env->CreateDirIfMissing(test_dir_));
-
-  // Create a single file
-  std::string path = test_dir_;
-  const EnvOptions soptions;
-#ifdef OS_WIN
-  path.append("\\test_file");
-#else
-  path.append("/test_file");
-#endif
-  std::string data("test data");
-  std::unique_ptr<WritableFile> file;
-  ASSERT_OK(env->NewWritableFile(path, &file, soptions));
-  ASSERT_OK(file->Append("test data"));
-
-  // get the children
-  std::vector<std::string> result;
-  ASSERT_OK(env->GetChildren(test_dir_, &result));
-
-  // expect only one file named `test_data`, i.e. no `.` or `..` names
-  ASSERT_EQ(result.size(), 1);
-  ASSERT_EQ(result.at(0), "test_file");
-}
-
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

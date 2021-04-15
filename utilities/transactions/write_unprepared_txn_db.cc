@@ -6,11 +6,10 @@
 #ifndef ROCKSDB_LITE
 
 #include "utilities/transactions/write_unprepared_txn_db.h"
-#include "db/arena_wrapped_db_iter.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "util/cast_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 // Instead of reconstructing a Transaction object, and calling rollback on it,
 // we can be more efficient with RollbackRecoveredTransaction by skipping
@@ -21,23 +20,10 @@ Status WriteUnpreparedTxnDB::RollbackRecoveredTransaction(
   assert(rtxn->unprepared_);
   auto cf_map_shared_ptr = WritePreparedTxnDB::GetCFHandleMap();
   auto cf_comp_map_shared_ptr = WritePreparedTxnDB::GetCFComparatorMap();
-  // In theory we could write with disableWAL = true during recovery, and
-  // assume that if we crash again during recovery, we can just replay from
-  // the very beginning. Unfortunately, the XIDs from the application may not
-  // necessarily be unique across restarts, potentially leading to situations
-  // like this:
-  //
-  // BEGIN_PREPARE(unprepared) Put(a) END_PREPARE(xid = 1)
-  // -- crash and recover with Put(a) rolled back as it was not prepared
-  // BEGIN_PREPARE(prepared) Put(b) END_PREPARE(xid = 1)
-  // COMMIT(xid = 1)
-  // -- crash and recover with both a, b
-  //
-  // We could just write the rollback marker, but then we would have to extend
-  // MemTableInserter during recovery to actually do writes into the DB
-  // instead of just dropping the in-memory write batch.
-  //
   WriteOptions w_options;
+  // If we crash during recovery, we can just recalculate and rewrite the
+  // rollback batch.
+  w_options.disableWAL = true;
 
   class InvalidSnapshotReadCallback : public ReadCallback {
    public:
@@ -100,12 +86,8 @@ Status WriteUnpreparedTxnDB::RollbackRecoveredTransaction(
         PinnableSlice pinnable_val;
         bool not_used;
         auto cf_handle = handles_[cf];
-        DBImpl::GetImplOptions get_impl_options;
-        get_impl_options.column_family = cf_handle;
-        get_impl_options.value = &pinnable_val;
-        get_impl_options.value_found = &not_used;
-        get_impl_options.callback = &callback;
-        s = db_->GetImpl(roptions, key, get_impl_options);
+        s = db_->GetImpl(roptions, cf_handle, key, &pinnable_val, &not_used,
+                         &callback);
         assert(s.ok() || s.IsNotFound());
         if (s.ok()) {
           s = rollback_batch_->Put(cf_handle, key, pinnable_val);
@@ -167,10 +149,7 @@ Status WriteUnpreparedTxnDB::RollbackRecoveredTransaction(
     }
 
     // The Rollback marker will be used as a batch separator
-    s = WriteBatchInternal::MarkRollback(&rollback_batch, rtxn->name_);
-    if (!s.ok()) {
-      return s;
-    }
+    WriteBatchInternal::MarkRollback(&rollback_batch, rtxn->name_);
 
     const uint64_t kNoLogRef = 0;
     const bool kDisableMemtable = true;
@@ -196,7 +175,7 @@ Status WriteUnpreparedTxnDB::Initialize(
     const std::vector<size_t>& compaction_enabled_cf_indices,
     const std::vector<ColumnFamilyHandle*>& handles) {
   // TODO(lth): Reduce code duplication in this function.
-  auto dbimpl = static_cast_with_check<DBImpl>(GetRootDB());
+  auto dbimpl = reinterpret_cast<DBImpl*>(GetRootDB());
   assert(dbimpl != nullptr);
 
   db_impl_->SetSnapshotChecker(new WritePreparedSnapshotChecker(this));
@@ -271,7 +250,8 @@ Status WriteUnpreparedTxnDB::Initialize(
 
     Transaction* real_trx = BeginTransaction(w_options, t_options, nullptr);
     assert(real_trx);
-    auto wupt = static_cast_with_check<WriteUnpreparedTxn>(real_trx);
+    auto wupt =
+        static_cast_with_check<WriteUnpreparedTxn, Transaction>(real_trx);
     wupt->recovered_txn_ = true;
 
     real_trx->SetLogNumber(first_log_number);
@@ -299,8 +279,8 @@ Status WriteUnpreparedTxnDB::Initialize(
       }
     }
 
-    const bool kClear = true;
-    wupt->InitWriteBatch(kClear);
+    wupt->write_batch_.Clear();
+    WriteBatchInternal::InsertNoop(wupt->write_batch_.GetWriteBatch());
 
     real_trx->SetState(Transaction::PREPARED);
     if (!s.ok()) {
@@ -308,7 +288,7 @@ Status WriteUnpreparedTxnDB::Initialize(
     }
   }
   // AddPrepared must be called in order
-  for (auto seq_cnt : ordered_seq_cnt) {
+  for (auto seq_cnt: ordered_seq_cnt) {
     auto seq = seq_cnt.first;
     auto cnt = seq_cnt.second;
     for (size_t i = 0; i < cnt; i++) {
@@ -368,8 +348,7 @@ struct WriteUnpreparedTxnDB::IteratorState {
   IteratorState(WritePreparedTxnDB* txn_db, SequenceNumber sequence,
                 std::shared_ptr<ManagedSnapshot> s,
                 SequenceNumber min_uncommitted, WriteUnpreparedTxn* txn)
-      : callback(txn_db, sequence, min_uncommitted, txn->unprep_seqs_,
-                 kBackedByDBSnapshot),
+      : callback(txn_db, sequence, min_uncommitted, txn->unprep_seqs_),
         snapshot(s) {}
   SequenceNumber MaxVisibleSeq() { return callback.max_visible_seq(); }
 
@@ -387,8 +366,8 @@ Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadOptions& options,
                                             ColumnFamilyHandle* column_family,
                                             WriteUnpreparedTxn* txn) {
   // TODO(lth): Refactor so that this logic is shared with WritePrepared.
-  constexpr bool expose_blob_index = false;
-  constexpr bool allow_refresh = false;
+  constexpr bool ALLOW_BLOB = true;
+  constexpr bool ALLOW_REFRESH = true;
   std::shared_ptr<ManagedSnapshot> own_snapshot = nullptr;
   SequenceNumber snapshot_seq = kMaxSequenceNumber;
   SequenceNumber min_uncommitted = 0;
@@ -453,18 +432,18 @@ Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadOptions& options,
     return nullptr;
   }
   min_uncommitted =
-      static_cast_with_check<const SnapshotImpl>(snapshot)->min_uncommitted_;
+      static_cast_with_check<const SnapshotImpl, const Snapshot>(snapshot)
+          ->min_uncommitted_;
 
-  auto* cfd =
-      static_cast_with_check<ColumnFamilyHandleImpl>(column_family)->cfd();
+  auto* cfd = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family)->cfd();
   auto* state =
       new IteratorState(this, snapshot_seq, own_snapshot, min_uncommitted, txn);
-  auto* db_iter = db_impl_->NewIteratorImpl(
-      options, cfd, state->MaxVisibleSeq(), &state->callback, expose_blob_index,
-      allow_refresh);
+  auto* db_iter =
+      db_impl_->NewIteratorImpl(options, cfd, state->MaxVisibleSeq(),
+                                &state->callback, !ALLOW_BLOB, !ALLOW_REFRESH);
   db_iter->RegisterCleanup(CleanupWriteUnpreparedTxnDBIterator, state, nullptr);
   return db_iter;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  //  namespace rocksdb
 #endif  // ROCKSDB_LITE

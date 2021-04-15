@@ -6,20 +6,22 @@
 #include "util/string_util.h"
 
 #include <errno.h>
+#include <cinttypes>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
-#include <cinttypes>
 #include <cmath>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+#include "rocksdb/env.h"
 #include "port/port.h"
 #include "port/sys_time.h"
 #include "rocksdb/slice.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 const std::string kNullptrString = "nullptr";
 
@@ -262,20 +264,6 @@ std::string trim(const std::string& str) {
   return std::string();
 }
 
-bool EndsWith(const std::string& string, const std::string& pattern) {
-  size_t plen = pattern.size();
-  size_t slen = string.size();
-  if (plen <= slen) {
-    return string.compare(slen - plen, plen, pattern) == 0;
-  } else {
-    return false;
-  }
-}
-
-bool StartsWith(const std::string& string, const std::string& pattern) {
-  return string.compare(0, pattern.size(), pattern) == 0;
-}
-
 #ifndef ROCKSDB_LITE
 
 bool ParseBoolean(const std::string& type, const std::string& value) {
@@ -419,4 +407,4 @@ bool SerializeIntVector(const std::vector<int>& vec, std::string* value) {
   return true;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

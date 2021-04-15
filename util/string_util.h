@@ -11,9 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "rocksdb/rocksdb_namespace.h"
-
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class Slice;
 
@@ -111,12 +109,6 @@ std::string UnescapeOptionString(const std::string& escaped_string);
 
 std::string trim(const std::string& str);
 
-// Returns true if "string" ends with "pattern"
-bool EndsWith(const std::string& string, const std::string& pattern);
-
-// Returns true if "string" starts with "pattern"
-bool StartsWith(const std::string& string, const std::string& pattern);
-
 #ifndef ROCKSDB_LITE
 bool ParseBoolean(const std::string& type, const std::string& value);
 
@@ -128,6 +120,7 @@ int32_t ParseInt32(const std::string& value);
 uint64_t ParseUint64(const std::string& value);
 
 int ParseInt(const std::string& value);
+
 
 int64_t ParseInt64(const std::string& value);
 
@@ -141,4 +134,4 @@ bool SerializeIntVector(const std::vector<int>& vec, std::string* value);
 
 extern const std::string kNullptrString;
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

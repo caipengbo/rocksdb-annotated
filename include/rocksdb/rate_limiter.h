@@ -12,7 +12,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/statistics.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class RateLimiter {
  public:
@@ -36,6 +36,9 @@ class RateLimiter {
   // This API allows user to dynamically change rate limiter's bytes per second.
   // REQUIRED: bytes_per_second > 0
   virtual void SetBytesPerSecond(int64_t bytes_per_second) = 0;
+
+  // Dynamically change rate limiter's auto_tuned mode.
+  virtual void SetAutoTuned(bool /*auto_tuned*/) {}
 
   // Deprecated. New RateLimiter derived classes should override
   // Request(const int64_t, const Env::IOPriority, Statistics*) or
@@ -91,6 +94,8 @@ class RateLimiter {
 
   virtual int64_t GetBytesPerSecond() const = 0;
 
+  virtual bool GetAutoTuned() const { return false; }
+
   virtual bool IsRateLimited(OpType op_type) {
     if ((mode_ == RateLimiter::Mode::kWritesOnly &&
          op_type == RateLimiter::OpType::kRead) ||
@@ -100,6 +105,8 @@ class RateLimiter {
     }
     return true;
   }
+
+  virtual void PaceUp(bool /*critical*/) {}
 
  protected:
   Mode GetMode() { return mode_; }
@@ -136,4 +143,10 @@ extern RateLimiter* NewGenericRateLimiter(
     RateLimiter::Mode mode = RateLimiter::Mode::kWritesOnly,
     bool auto_tuned = false);
 
-}  // namespace ROCKSDB_NAMESPACE
+extern RateLimiter* NewWriteAmpBasedRateLimiter(
+    int64_t rate_bytes_per_sec, int64_t refill_period_us = 100 * 1000,
+    int32_t fairness = 10,
+    RateLimiter::Mode mode = RateLimiter::Mode::kWritesOnly,
+    bool auto_tuned = false);
+
+}  // namespace rocksdb

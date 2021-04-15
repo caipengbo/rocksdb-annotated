@@ -12,9 +12,8 @@
 #if !defined(ROCKSDB_LITE)
 #include "rocksdb/utilities/table_properties_collectors.h"
 #include "test_util/sync_point.h"
-#include "util/random.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 static std::string CompressibleString(Random* rnd, int len) {
   std::string r;
@@ -26,8 +25,8 @@ class DBTestUniversalCompactionBase
     : public DBTestBase,
       public ::testing::WithParamInterface<std::tuple<int, bool>> {
  public:
-  explicit DBTestUniversalCompactionBase(const std::string& path)
-      : DBTestBase(path, /*env_do_fsync=*/false) {}
+  explicit DBTestUniversalCompactionBase(
+      const std::string& path) : DBTestBase(path) {}
   void SetUp() override {
     num_levels_ = std::get<0>(GetParam());
     exclusive_manual_compaction_ = std::get<1>(GetParam());
@@ -42,10 +41,10 @@ class DBTestUniversalCompaction : public DBTestUniversalCompactionBase {
       DBTestUniversalCompactionBase("/db_universal_compaction_test") {}
 };
 
-class DBTestUniversalCompaction2 : public DBTestBase {
+class DBTestUniversalDeleteTrigCompaction : public DBTestBase {
  public:
-  DBTestUniversalCompaction2()
-      : DBTestBase("/db_universal_compaction_test2", /*env_do_fsync=*/false) {}
+  DBTestUniversalDeleteTrigCompaction()
+      : DBTestBase("/db_universal_compaction_test") {}
 };
 
 namespace {
@@ -92,6 +91,36 @@ class KeepFilterFactory : public CompactionFilterFactory {
   std::atomic_bool expect_full_compaction_;
   std::atomic_bool expect_manual_compaction_;
 };
+
+class DelayFilter : public CompactionFilter {
+ public:
+  explicit DelayFilter(DBTestBase* d) : db_test(d) {}
+  bool Filter(int /*level*/, const Slice& /*key*/, const Slice& /*value*/,
+              std::string* /*new_value*/,
+              bool* /*value_changed*/) const override {
+    db_test->env_->addon_time_.fetch_add(1000);
+    return true;
+  }
+
+  const char* Name() const override { return "DelayFilter"; }
+
+ private:
+  DBTestBase* db_test;
+};
+
+class DelayFilterFactory : public CompactionFilterFactory {
+ public:
+  explicit DelayFilterFactory(DBTestBase* d) : db_test(d) {}
+  std::unique_ptr<CompactionFilter> CreateCompactionFilter(
+      const CompactionFilter::Context& /*context*/) override {
+    return std::unique_ptr<CompactionFilter>(new DelayFilter(db_test));
+  }
+
+  const char* Name() const override { return "DelayFilterFactory"; }
+
+ private:
+  DBTestBase* db_test;
+};
 }  // namespace
 
 // Make sure we don't trigger a problem if the trigger condtion is given
@@ -126,11 +155,11 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionSingleSortedRun) {
   for (int num = 0; num < 16; num++) {
     // Write 100KB file. And immediately it should be compacted to one file.
     GenerateNewFile(&rnd, &key_idx);
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForCompact();
     ASSERT_EQ(NumSortedRuns(0), 1);
   }
   ASSERT_OK(Put(Key(key_idx), ""));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(NumSortedRuns(0), 1);
 }
 
@@ -150,7 +179,7 @@ TEST_P(DBTestUniversalCompaction, OptimizeFiltersForHits) {
   bbto.whole_key_filtering = true;
   options.table_factory.reset(NewBlockBasedTableFactory(bbto));
   options.optimize_filters_for_hits = true;
-  options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
+  options.statistics = rocksdb::CreateDBStatistics();
   options.memtable_factory.reset(new SpecialSkipListFactory(3));
 
   DestroyAndReopen(options);
@@ -162,15 +191,15 @@ TEST_P(DBTestUniversalCompaction, OptimizeFiltersForHits) {
                  Env::Priority::LOW);
 
   for (int num = 0; num < options.level0_file_num_compaction_trigger; num++) {
-    ASSERT_OK(Put(Key(num * 10), "val"));
+    Put(Key(num * 10), "val");
     if (num) {
-      ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+      dbfull()->TEST_WaitForFlushMemTable();
     }
-    ASSERT_OK(Put(Key(30 + num * 10), "val"));
-    ASSERT_OK(Put(Key(60 + num * 10), "val"));
+    Put(Key(30 + num * 10), "val");
+    Put(Key(60 + num * 10), "val");
   }
-  ASSERT_OK(Put("", ""));
-  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+  Put("", "");
+  dbfull()->TEST_WaitForFlushMemTable();
 
   // Query set of non existing keys
   for (int i = 5; i < 90; i += 10) {
@@ -190,7 +219,7 @@ TEST_P(DBTestUniversalCompaction, OptimizeFiltersForHits) {
 
   // Unblock compaction and wait it for happening.
   sleeping_task_low.WakeUp();
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // The same queries will not trigger bloom filter
   for (int i = 5; i < 90; i += 10) {
@@ -221,7 +250,7 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   DestroyAndReopen(options);
   CreateAndReopenWithCF({"pikachu"}, options);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBTestWritableFile.GetPreallocationStatus", [&](void* arg) {
         ASSERT_TRUE(arg != nullptr);
         size_t preallocation_size = *(static_cast<size_t*>(arg));
@@ -229,7 +258,7 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
           ASSERT_LE(preallocation_size, options.target_file_size_base * 1.1);
         }
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   Random rnd(301);
   int key_idx = 0;
@@ -294,7 +323,7 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   //   Now we have 3 files at level 0, with size 4, 2.4, 2. Let's generate a
   //   new file of size 1.
   GenerateNewFile(1, &rnd, &key_idx);
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Level-0 compaction is triggered, but no file will be picked up.
   ASSERT_EQ(NumSortedRuns(1), 4);
 
@@ -303,11 +332,11 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrigger) {
   //   a new file of size 1.
   filter->expect_full_compaction_.store(true);
   GenerateNewFile(1, &rnd, &key_idx);
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // All files at level 0 will be compacted into a single one.
   ASSERT_EQ(NumSortedRuns(1), 1);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 
 TEST_P(DBTestUniversalCompaction, UniversalCompactionSizeAmplification) {
@@ -333,10 +362,10 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionSizeAmplification) {
        num++) {
     // Write 110KB (11 values, each 10K)
     for (int i = 0; i < 11; i++) {
-      ASSERT_OK(Put(1, Key(key_idx), rnd.RandomString(10000)));
+      ASSERT_OK(Put(1, Key(key_idx), RandomString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
     ASSERT_EQ(NumSortedRuns(1), num + 1);
   }
   ASSERT_EQ(NumSortedRuns(1), 2);
@@ -346,7 +375,7 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionSizeAmplification) {
   // but will instead trigger size amplification.
   ASSERT_OK(Flush(1));
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // Verify that size amplification did occur
   ASSERT_EQ(NumSortedRuns(1), 1);
@@ -367,8 +396,8 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionSizeAmplification) {
 
   int total_picked_compactions = 0;
   int total_size_amp_compactions = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "UniversalCompactionBuilder::PickCompaction:Return", [&](void* arg) {
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "UniversalCompactionPicker::PickCompaction:Return", [&](void* arg) {
         if (arg) {
           total_picked_compactions++;
           Compaction* c = static_cast<Compaction*>(arg);
@@ -378,7 +407,7 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionSizeAmplification) {
           }
         }
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   MutableCFOptions mutable_cf_options;
   CreateAndReopenWithCF({"pikachu"}, options);
@@ -391,10 +420,10 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionSizeAmplification) {
        num++) {
     // Write 110KB (11 values, each 10K)
     for (int i = 0; i < 11; i++) {
-      ASSERT_OK(Put(1, Key(key_idx), rnd.RandomString(10000)));
+      ASSERT_OK(Put(1, Key(key_idx), RandomString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
     ASSERT_EQ(NumSortedRuns(1), num + 1);
   }
   ASSERT_EQ(NumSortedRuns(1), 2);
@@ -404,7 +433,7 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionSizeAmplification) {
   // but could instead trigger size amplification if it's set
   // to 110.
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Verify compaction did not happen
   ASSERT_EQ(NumSortedRuns(1), 3);
 
@@ -412,20 +441,20 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionSizeAmplification) {
   ASSERT_EQ(dbfull()
                 ->GetOptions(handles_[1])
                 .compaction_options_universal.max_size_amplification_percent,
-            200U);
+            200);
   ASSERT_OK(dbfull()->SetOptions(handles_[1],
                                  {{"compaction_options_universal",
                                    "{max_size_amplification_percent=110;}"}}));
   ASSERT_EQ(dbfull()
                 ->GetOptions(handles_[1])
                 .compaction_options_universal.max_size_amplification_percent,
-            110u);
+            110);
   ASSERT_OK(dbfull()->TEST_GetLatestMutableCFOptions(handles_[1],
                                                      &mutable_cf_options));
-  ASSERT_EQ(110u, mutable_cf_options.compaction_options_universal
-                      .max_size_amplification_percent);
+  ASSERT_EQ(110, mutable_cf_options.compaction_options_universal
+                     .max_size_amplification_percent);
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Verify that size amplification did happen
   ASSERT_EQ(NumSortedRuns(1), 1);
   ASSERT_EQ(total_picked_compactions, 1);
@@ -448,8 +477,8 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionReadAmplification) {
 
   int total_picked_compactions = 0;
   int total_size_ratio_compactions = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "UniversalCompactionBuilder::PickCompaction:Return", [&](void* arg) {
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "UniversalCompactionPicker::PickCompaction:Return", [&](void* arg) {
         if (arg) {
           total_picked_compactions++;
           Compaction* c = static_cast<Compaction*>(arg);
@@ -458,7 +487,7 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionReadAmplification) {
           }
         }
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   MutableCFOptions mutable_cf_options;
   CreateAndReopenWithCF({"pikachu"}, options);
@@ -470,10 +499,10 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionReadAmplification) {
   for (int num = 0; num < options.level0_file_num_compaction_trigger; num++) {
     // Write 110KB (11 values, each 10K)
     for (int i = 0; i < 11; i++) {
-      ASSERT_OK(Put(1, Key(key_idx), rnd.RandomString(10000)));
+      ASSERT_OK(Put(1, Key(key_idx), RandomString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
     ASSERT_EQ(NumSortedRuns(1), num + 1);
   }
   ASSERT_EQ(NumSortedRuns(1), options.level0_file_num_compaction_trigger);
@@ -481,7 +510,7 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionReadAmplification) {
   // Flush whatever is remaining in memtable. This is typically small, about
   // 30KB.
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Verify compaction did not happen
   ASSERT_EQ(NumSortedRuns(1), options.level0_file_num_compaction_trigger + 1);
   ASSERT_EQ(total_picked_compactions, 0);
@@ -493,24 +522,22 @@ TEST_P(DBTestUniversalCompaction, DynamicUniversalCompactionReadAmplification) {
   ASSERT_EQ(dbfull()
                 ->GetOptions(handles_[1])
                 .compaction_options_universal.min_merge_width,
-            2u);
+            2);
   ASSERT_EQ(dbfull()
                 ->GetOptions(handles_[1])
                 .compaction_options_universal.max_merge_width,
-            2u);
+            2);
   ASSERT_EQ(
       dbfull()->GetOptions(handles_[1]).compaction_options_universal.size_ratio,
-      100u);
+      100);
 
   ASSERT_OK(dbfull()->TEST_GetLatestMutableCFOptions(handles_[1],
                                                      &mutable_cf_options));
-  ASSERT_EQ(mutable_cf_options.compaction_options_universal.size_ratio, 100u);
-  ASSERT_EQ(mutable_cf_options.compaction_options_universal.min_merge_width,
-            2u);
-  ASSERT_EQ(mutable_cf_options.compaction_options_universal.max_merge_width,
-            2u);
+  ASSERT_EQ(mutable_cf_options.compaction_options_universal.size_ratio, 100);
+  ASSERT_EQ(mutable_cf_options.compaction_options_universal.min_merge_width, 2);
+  ASSERT_EQ(mutable_cf_options.compaction_options_universal.max_merge_width, 2);
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // Files in L0 are approx: 0.3 (30KB), 1, 1, 1.
   // On compaction: the files are below the size amp threshold, so we
@@ -548,10 +575,10 @@ TEST_P(DBTestUniversalCompaction, CompactFilesOnUniversalCompaction) {
   ASSERT_EQ(options.compaction_style, kCompactionStyleUniversal);
   Random rnd(301);
   for (int key = 1024 * kEntriesPerBuffer; key >= 0; --key) {
-    ASSERT_OK(Put(1, ToString(key), rnd.RandomString(kTestValueSize)));
+    ASSERT_OK(Put(1, ToString(key), RandomString(&rnd, kTestValueSize)));
   }
-  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
+  dbfull()->TEST_WaitForCompact();
   ColumnFamilyMetaData cf_meta;
   dbfull()->GetColumnFamilyMetaData(handles_[1], &cf_meta);
   std::vector<std::string> compaction_input_file_names;
@@ -611,17 +638,17 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTargetLevel) {
   // Generate 3 overlapping files
   Random rnd(301);
   for (int i = 0; i < 210; i++) {
-    ASSERT_OK(Put(Key(i), rnd.RandomString(100)));
+    ASSERT_OK(Put(Key(i), RandomString(&rnd, 100)));
   }
   ASSERT_OK(Flush());
 
   for (int i = 200; i < 300; i++) {
-    ASSERT_OK(Put(Key(i), rnd.RandomString(100)));
+    ASSERT_OK(Put(Key(i), RandomString(&rnd, 100)));
   }
   ASSERT_OK(Flush());
 
   for (int i = 250; i < 260; i++) {
-    ASSERT_OK(Put(Key(i), rnd.RandomString(100)));
+    ASSERT_OK(Put(Key(i), RandomString(&rnd, 100)));
   }
   ASSERT_OK(Flush());
 
@@ -631,7 +658,7 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTargetLevel) {
   compact_options.change_level = true;
   compact_options.target_level = 4;
   compact_options.exclusive_manual_compaction = exclusive_manual_compaction_;
-  ASSERT_OK(db_->CompactRange(compact_options, nullptr, nullptr));
+  db_->CompactRange(compact_options, nullptr, nullptr);
   ASSERT_EQ("0,0,0,0,1", FilesPerLevel(0));
 }
 
@@ -665,7 +692,7 @@ TEST_P(DBTestUniversalCompactionMultiLevels, UniversalCompactionMultiLevels) {
     ASSERT_OK(Put(1, Key(i % num_keys), Key(i)));
   }
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   for (int i = num_keys; i < num_keys * 2; i++) {
     ASSERT_EQ(Get(1, Key(i % num_keys)), Key(i));
@@ -676,17 +703,17 @@ TEST_P(DBTestUniversalCompactionMultiLevels, UniversalCompactionMultiLevels) {
 TEST_P(DBTestUniversalCompactionMultiLevels, UniversalCompactionTrivialMove) {
   int32_t trivial_move = 0;
   int32_t non_trivial_move = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:TrivialMove",
       [&](void* /*arg*/) { trivial_move++; });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:NonTrivial", [&](void* arg) {
         non_trivial_move++;
         ASSERT_TRUE(arg != nullptr);
         int output_level = *(static_cast<int*>(arg));
         ASSERT_EQ(output_level, 0);
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   Options options = CurrentOptions();
   options.compaction_style = kCompactionStyleUniversal;
@@ -712,15 +739,16 @@ TEST_P(DBTestUniversalCompactionMultiLevels, UniversalCompactionTrivialMove) {
   std::vector<std::string> values;
 
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(trivial_move, 0);
   ASSERT_GT(non_trivial_move, 0);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 
-INSTANTIATE_TEST_CASE_P(MultiLevels, DBTestUniversalCompactionMultiLevels,
+INSTANTIATE_TEST_CASE_P(DBTestUniversalCompactionMultiLevels,
+                        DBTestUniversalCompactionMultiLevels,
                         ::testing::Combine(::testing::Values(3, 20),
                                            ::testing::Bool()));
 
@@ -748,24 +776,24 @@ TEST_P(DBTestUniversalCompactionParallel, UniversalCompactionParallel) {
   // Delay every compaction so multiple compactions will happen.
   std::atomic<int> num_compactions_running(0);
   std::atomic<bool> has_parallel(false);
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "CompactionJob::Run():Start", [&](void* /*arg*/) {
-        if (num_compactions_running.fetch_add(1) > 0) {
-          has_parallel.store(true);
-          return;
-        }
-        for (int nwait = 0; nwait < 20000; nwait++) {
-          if (has_parallel.load() || num_compactions_running.load() > 1) {
-            has_parallel.store(true);
-            break;
-          }
-          env_->SleepForMicroseconds(1000);
-        }
-      });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack("CompactionJob::Run():Start",
+                                                 [&](void* /*arg*/) {
+    if (num_compactions_running.fetch_add(1) > 0) {
+      has_parallel.store(true);
+      return;
+    }
+    for (int nwait = 0; nwait < 20000; nwait++) {
+      if (has_parallel.load() || num_compactions_running.load() > 1) {
+        has_parallel.store(true);
+        break;
+      }
+      env_->SleepForMicroseconds(1000);
+    }
+  });
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "CompactionJob::Run():End",
       [&](void* /*arg*/) { num_compactions_running.fetch_add(-1); });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   options = CurrentOptions(options);
   ReopenWithColumnFamilies({"default", "pikachu"}, options);
@@ -775,9 +803,9 @@ TEST_P(DBTestUniversalCompactionParallel, UniversalCompactionParallel) {
   for (int i = 0; i < num_keys * 2; i++) {
     ASSERT_OK(Put(1, Key(i % num_keys), Key(i)));
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
   ASSERT_EQ(num_compactions_running.load(), 0);
   ASSERT_TRUE(has_parallel.load());
 
@@ -806,23 +834,23 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
       UINT_MAX;
   DestroyAndReopen(options);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+  rocksdb::SyncPoint::GetInstance()->LoadDependency(
       {{"DBTestUniversalCompactionParallel::PickByFileNumberBug:0",
         "BackgroundCallCompaction:0"},
-       {"UniversalCompactionBuilder::PickCompaction:Return",
+       {"UniversalCompactionPicker::PickCompaction:Return",
         "DBTestUniversalCompactionParallel::PickByFileNumberBug:1"},
        {"DBTestUniversalCompactionParallel::PickByFileNumberBug:2",
         "CompactionJob::Run():Start"}});
 
   int total_picked_compactions = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "UniversalCompactionBuilder::PickCompaction:Return", [&](void* arg) {
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "UniversalCompactionPicker::PickCompaction:Return", [&](void* arg) {
         if (arg) {
           total_picked_compactions++;
         }
       });
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   // Write 7 files to trigger compaction
   int key_idx = 1;
@@ -837,7 +865,7 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
   // Wait for the 1st background compaction process to start
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:0");
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:1");
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
+  rocksdb::SyncPoint::GetInstance()->ClearTrace();
 
   // Write 3 files while 1st compaction is held
   // These 3 files have different sizes to avoid compacting based on size_ratio
@@ -853,7 +881,7 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
 
   // Hold the 1st compaction from finishing
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:2");
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // There should only be one picked compaction as the score drops below one
   // after the first one is picked.
@@ -861,13 +889,13 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
   EXPECT_EQ(TotalTableFiles(), 4);
 
   // Stop SyncPoint and destroy the DB and reopen it again
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->ClearTrace();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
   key_idx = 1;
   total_picked_compactions = 0;
   DestroyAndReopen(options);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   // Write 7 files to trigger compaction
   for (int i = 1; i <= 70; i++) {
@@ -881,7 +909,7 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
   // Wait for the 1st background compaction process to start
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:0");
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:1");
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearTrace();
+  rocksdb::SyncPoint::GetInstance()->ClearTrace();
 
   // Write 8 files while 1st compaction is held
   // These 8 files have different sizes to avoid compacting based on size_ratio
@@ -901,7 +929,7 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
 
   // Hold the 1st and 2nd compaction from finishing
   TEST_SYNC_POINT("DBTestUniversalCompactionParallel::PickByFileNumberBug:2");
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // This time we will trigger a compaction because of size ratio and
   // another compaction because of number of files that are not compacted
@@ -909,7 +937,8 @@ TEST_P(DBTestUniversalCompactionParallel, PickByFileNumberBug) {
   EXPECT_GE(total_picked_compactions, 2);
 }
 
-INSTANTIATE_TEST_CASE_P(Parallel, DBTestUniversalCompactionParallel,
+INSTANTIATE_TEST_CASE_P(DBTestUniversalCompactionParallel,
+                        DBTestUniversalCompactionParallel,
                         ::testing::Combine(::testing::Values(1, 10),
                                            ::testing::Values(false)));
 #endif  // ROCKSDB_VALGRIND_RUN
@@ -932,17 +961,17 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionOptions) {
   for (int num = 0; num < options.level0_file_num_compaction_trigger; num++) {
     // Write 100KB (100 values, each 1K)
     for (int i = 0; i < 100; i++) {
-      ASSERT_OK(Put(1, Key(key_idx), rnd.RandomString(990)));
+      ASSERT_OK(Put(1, Key(key_idx), RandomString(&rnd, 990)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
 
     if (num < options.level0_file_num_compaction_trigger - 1) {
       ASSERT_EQ(NumSortedRuns(1), num + 1);
     }
   }
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(NumSortedRuns(1), 1);
 }
 
@@ -970,20 +999,20 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionStopStyleSimilarSize) {
        num++) {
     // Write 100KB (100 values, each 1K)
     for (int i = 0; i < 100; i++) {
-      ASSERT_OK(Put(Key(key_idx), rnd.RandomString(990)));
+      ASSERT_OK(Put(Key(key_idx), RandomString(&rnd, 990)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+    dbfull()->TEST_WaitForFlushMemTable();
     ASSERT_EQ(NumSortedRuns(), num + 1);
   }
 
   // Generate one more file at level-0, which should trigger level-0
   // compaction.
   for (int i = 0; i < 100; i++) {
-    ASSERT_OK(Put(Key(key_idx), rnd.RandomString(990)));
+    ASSERT_OK(Put(Key(key_idx), RandomString(&rnd, 990)));
     key_idx++;
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Suppose each file flushed from mem table has size 1. Now we compact
   // (level0_file_num_compaction_trigger+1)=4 files and should have a big
   // file of size 4.
@@ -996,25 +1025,25 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionStopStyleSimilarSize) {
   //   First, clean up memtable before inserting new data. This will generate
   //   a level-0 file, with size around 0.4 (according to previously written
   //   data amount).
-  ASSERT_OK(dbfull()->Flush(FlushOptions()));
+  dbfull()->Flush(FlushOptions());
   for (int num = 0; num < options.level0_file_num_compaction_trigger - 3;
        num++) {
     // Write 110KB (11 values, each 10K)
     for (int i = 0; i < 100; i++) {
-      ASSERT_OK(Put(Key(key_idx), rnd.RandomString(990)));
+      ASSERT_OK(Put(Key(key_idx), RandomString(&rnd, 990)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+    dbfull()->TEST_WaitForFlushMemTable();
     ASSERT_EQ(NumSortedRuns(), num + 3);
   }
 
   // Generate one more file at level-0, which should trigger level-0
   // compaction.
   for (int i = 0; i < 100; i++) {
-    ASSERT_OK(Put(Key(key_idx), rnd.RandomString(990)));
+    ASSERT_OK(Put(Key(key_idx), RandomString(&rnd, 990)));
     key_idx++;
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Before compaction, we have 4 files at level 0, with size 4, 0.4, 1, 1.
   // After compaction, we should have 3 files, with size 4, 0.4, 2.
   ASSERT_EQ(NumSortedRuns(), 3);
@@ -1022,10 +1051,10 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionStopStyleSimilarSize) {
   //   Now we have 3 files at level 0, with size 4, 0.4, 2. Generate one
   //   more file at level-0, which should trigger level-0 compaction.
   for (int i = 0; i < 100; i++) {
-    ASSERT_OK(Put(Key(key_idx), rnd.RandomString(990)));
+    ASSERT_OK(Put(Key(key_idx), RandomString(&rnd, 990)));
     key_idx++;
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Level-0 compaction is triggered, but no file will be picked up.
   ASSERT_EQ(NumSortedRuns(), 4);
 }
@@ -1054,8 +1083,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio1) {
       ASSERT_OK(Put(Key(key_idx), CompressibleString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_LT(TotalSize(), 110000U * 2 * 0.9);
 
@@ -1066,8 +1095,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio1) {
       ASSERT_OK(Put(Key(key_idx), CompressibleString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_LT(TotalSize(), 110000 * 4 * 0.9);
 
@@ -1079,8 +1108,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio1) {
       ASSERT_OK(Put(Key(key_idx), CompressibleString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_LT(TotalSize(), 110000 * 6 * 0.9);
 
@@ -1092,8 +1121,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio1) {
       ASSERT_OK(Put(Key(key_idx), CompressibleString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_GT(TotalSize(), 110000 * 11 * 0.8 + 110000 * 2);
 }
@@ -1122,8 +1151,8 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio2) {
       ASSERT_OK(Put(Key(key_idx), CompressibleString(&rnd, 10000)));
       key_idx++;
     }
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_LT(TotalSize(), 120000U * 12 * 0.82 + 120000 * 2);
 }
@@ -1133,17 +1162,17 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionCompressRatio2) {
 TEST_P(DBTestUniversalCompaction, UniversalCompactionTrivialMoveTest1) {
   int32_t trivial_move = 0;
   int32_t non_trivial_move = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:TrivialMove",
       [&](void* /*arg*/) { trivial_move++; });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:NonTrivial", [&](void* arg) {
         non_trivial_move++;
         ASSERT_TRUE(arg != nullptr);
         int output_level = *(static_cast<int*>(arg));
         ASSERT_EQ(output_level, 0);
       });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   Options options = CurrentOptions();
   options.compaction_style = kCompactionStyleUniversal;
@@ -1169,27 +1198,27 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrivialMoveTest1) {
   std::vector<std::string> values;
 
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(trivial_move, 0);
   ASSERT_GT(non_trivial_move, 0);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 // Test that checks trivial move in universal compaction
 TEST_P(DBTestUniversalCompaction, UniversalCompactionTrivialMoveTest2) {
   int32_t trivial_move = 0;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:TrivialMove",
       [&](void* /*arg*/) { trivial_move++; });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
       "DBImpl::BackgroundCompaction:NonTrivial", [&](void* arg) {
         ASSERT_TRUE(arg != nullptr);
         int output_level = *(static_cast<int*>(arg));
         ASSERT_EQ(output_level, 0);
       });
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   Options options = CurrentOptions();
   options.compaction_style = kCompactionStyleUniversal;
@@ -1215,11 +1244,11 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionTrivialMoveTest2) {
   std::vector<std::string> values;
 
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(trivial_move, 0);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
 }
 #endif  // ROCKSDB_VALGRIND_RUN
 
@@ -1239,14 +1268,12 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionFourPaths) {
   options.num_levels = 1;
 
   std::vector<std::string> filenames;
-  if (env_->GetChildren(options.db_paths[1].path, &filenames).ok()) {
-    // Delete archival files.
-    for (size_t i = 0; i < filenames.size(); ++i) {
-      ASSERT_OK(
-          env_->DeleteFile(options.db_paths[1].path + "/" + filenames[i]));
-    }
-    ASSERT_OK(env_->DeleteDir(options.db_paths[1].path));
+  env_->GetChildren(options.db_paths[1].path, &filenames);
+  // Delete archival files.
+  for (size_t i = 0; i < filenames.size(); ++i) {
+    env_->DeleteFile(options.db_paths[1].path + "/" + filenames[i]);
   }
+  env_->DeleteDir(options.db_paths[1].path);
   Reopen(options);
 
   Random rnd(301);
@@ -1504,12 +1531,12 @@ TEST_P(DBTestUniversalCompaction, IncreaseUniversalCompactionNumLevels) {
 
   for (int i = 0; i <= max_key1; i++) {
     // each value is 10K
-    ASSERT_OK(Put(1, Key(i), rnd.RandomString(10000)));
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    ASSERT_OK(Put(1, Key(i), RandomString(&rnd, 10000)));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // Stage 2: reopen with universal compaction, num_levels=4
   options.compaction_style = kCompactionStyleUniversal;
@@ -1522,12 +1549,12 @@ TEST_P(DBTestUniversalCompaction, IncreaseUniversalCompactionNumLevels) {
   // Insert more keys
   for (int i = max_key1 + 1; i <= max_key2; i++) {
     // each value is 10K
-    ASSERT_OK(Put(1, Key(i), rnd.RandomString(10000)));
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    ASSERT_OK(Put(1, Key(i), RandomString(&rnd, 10000)));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   verify_func(max_key2);
   // Compaction to non-L0 has happened.
@@ -1542,8 +1569,7 @@ TEST_P(DBTestUniversalCompaction, IncreaseUniversalCompactionNumLevels) {
   compact_options.change_level = true;
   compact_options.target_level = 0;
   compact_options.exclusive_manual_compaction = exclusive_manual_compaction_;
-  ASSERT_OK(
-      dbfull()->CompactRange(compact_options, handles_[1], nullptr, nullptr));
+  dbfull()->CompactRange(compact_options, handles_[1], nullptr, nullptr);
   // Need to restart it once to remove higher level records in manifest.
   ReopenWithColumnFamilies({"default", "pikachu"}, options);
   // Final reopen
@@ -1555,12 +1581,12 @@ TEST_P(DBTestUniversalCompaction, IncreaseUniversalCompactionNumLevels) {
   // Insert more keys
   for (int i = max_key2 + 1; i <= max_key3; i++) {
     // each value is 10K
-    ASSERT_OK(Put(1, Key(i), rnd.RandomString(10000)));
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable(handles_[1]));
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+    ASSERT_OK(Put(1, Key(i), RandomString(&rnd, 10000)));
+    dbfull()->TEST_WaitForFlushMemTable(handles_[1]);
+    dbfull()->TEST_WaitForCompact();
   }
   ASSERT_OK(Flush(1));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   verify_func(max_key3);
 }
 
@@ -1582,14 +1608,12 @@ TEST_P(DBTestUniversalCompaction, UniversalCompactionSecondPathRatio) {
       new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
 
   std::vector<std::string> filenames;
-  if (env_->GetChildren(options.db_paths[1].path, &filenames).ok()) {
-    // Delete archival files.
-    for (size_t i = 0; i < filenames.size(); ++i) {
-      ASSERT_OK(
-          env_->DeleteFile(options.db_paths[1].path + "/" + filenames[i]));
-    }
-    ASSERT_OK(env_->DeleteDir(options.db_paths[1].path));
+  env_->GetChildren(options.db_paths[1].path, &filenames);
+  // Delete archival files.
+  for (size_t i = 0; i < filenames.size(); ++i) {
+    env_->DeleteFile(options.db_paths[1].path + "/" + filenames[i]);
   }
+  env_->DeleteDir(options.db_paths[1].path);
   Reopen(options);
 
   Random rnd(301);
@@ -1685,7 +1709,7 @@ TEST_P(DBTestUniversalCompaction, ConcurrentBottomPriLowPriCompactions) {
   options.compaction_options_universal.max_size_amplification_percent = 110;
   DestroyAndReopen(options);
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+  rocksdb::SyncPoint::GetInstance()->LoadDependency(
       {// wait for the full compaction to be picked before adding files intended
        // for the second one.
        {"DBImpl::BackgroundCompaction:ForwardToBottomPriPool",
@@ -1704,21 +1728,21 @@ TEST_P(DBTestUniversalCompaction, ConcurrentBottomPriLowPriCompactions) {
       // use no_wait above because that one waits for flush and compaction. We
       // don't want to wait for compaction because the full compaction is
       // intentionally blocked while more files are flushed.
-      ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+      dbfull()->TEST_WaitForFlushMemTable();
     }
     if (i == 0) {
       TEST_SYNC_POINT(
           "DBTestUniversalCompaction:ConcurrentBottomPriLowPriCompactions:0");
     }
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   // First compaction should output to bottom level. Second should output to L0
   // since older L0 files pending compaction prevent it from being placed lower.
   ASSERT_EQ(NumSortedRuns(), 2);
   ASSERT_GT(NumTableFilesAtLevel(0), 0);
   ASSERT_GT(NumTableFilesAtLevel(num_levels_ - 1), 0);
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
   Env::Default()->SetBackgroundThreads(0, Env::Priority::BOTTOM);
 }
 
@@ -1728,21 +1752,21 @@ TEST_P(DBTestUniversalCompaction, RecalculateScoreAfterPicking) {
   // scheduling more; otherwise, other CFs/DBs may be delayed unnecessarily.
   const int kNumFilesTrigger = 8;
   Options options = CurrentOptions();
-  options.memtable_factory.reset(
-      new SpecialSkipListFactory(KNumKeysByGenerateNewFile - 1));
   options.compaction_options_universal.max_merge_width = kNumFilesTrigger / 2;
   options.compaction_options_universal.max_size_amplification_percent =
       static_cast<unsigned int>(-1);
   options.compaction_style = kCompactionStyleUniversal;
   options.level0_file_num_compaction_trigger = kNumFilesTrigger;
   options.num_levels = num_levels_;
+  options.write_buffer_size = 100 << 10;  // 100KB
   Reopen(options);
 
   std::atomic<int> num_compactions_attempted(0);
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "DBImpl::BackgroundCompaction:Start",
-      [&](void* /*arg*/) { ++num_compactions_attempted; });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "DBImpl::BackgroundCompaction:Start", [&](void* /*arg*/) {
+        ++num_compactions_attempted;
+      });
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   Random rnd(301);
   for (int num = 0; num < kNumFilesTrigger; num++) {
@@ -1750,7 +1774,7 @@ TEST_P(DBTestUniversalCompaction, RecalculateScoreAfterPicking) {
     int key_idx = 0;
     GenerateNewFile(&rnd, &key_idx);
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   // Compacting the first four files was enough to bring the score below one so
   // there's no need to schedule any more compactions.
   ASSERT_EQ(1, num_compactions_attempted);
@@ -1780,9 +1804,9 @@ TEST_P(DBTestUniversalCompaction, FinalSortedRunCompactFilesConflict) {
   auto stop_token =
       dbfull()->TEST_write_controler().GetCompactionPressureToken();
 
-  ASSERT_OK(Put("key", "val"));
-  ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  Put("key", "val");
+  Flush();
+  dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr);
   ASSERT_EQ(NumTableFilesAtLevel(num_levels_ - 1), 1);
   ColumnFamilyMetaData cf_meta;
   ColumnFamilyHandle* default_cfh = db_->DefaultColumnFamily();
@@ -1791,12 +1815,12 @@ TEST_P(DBTestUniversalCompaction, FinalSortedRunCompactFilesConflict) {
   std::string first_sst_filename =
       cf_meta.levels[num_levels_ - 1].files[0].name;
 
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+  rocksdb::SyncPoint::GetInstance()->LoadDependency(
       {{"CompactFilesImpl:0",
         "DBTestUniversalCompaction:FinalSortedRunCompactFilesConflict:0"},
        {"DBImpl::BackgroundCompaction():AfterPickCompaction",
         "CompactFilesImpl:1"}});
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   port::Thread compact_files_thread([&]() {
     ASSERT_OK(dbfull()->CompactFiles(CompactionOptions(), default_cfh,
@@ -1806,15 +1830,15 @@ TEST_P(DBTestUniversalCompaction, FinalSortedRunCompactFilesConflict) {
   TEST_SYNC_POINT(
       "DBTestUniversalCompaction:FinalSortedRunCompactFilesConflict:0");
   for (int i = 0; i < 2; ++i) {
-    ASSERT_OK(Put("key", "val"));
-    ASSERT_OK(Flush());
+    Put("key", "val");
+    Flush();
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   compact_files_thread.join();
 }
 
-INSTANTIATE_TEST_CASE_P(NumLevels, DBTestUniversalCompaction,
+INSTANTIATE_TEST_CASE_P(UniversalCompactionNumLevels, DBTestUniversalCompaction,
                         ::testing::Combine(::testing::Values(1, 3, 5),
                                            ::testing::Bool()));
 
@@ -1840,7 +1864,7 @@ TEST_P(DBTestUniversalManualCompactionOutputPathId,
   DestroyAndReopen(options);
   CreateAndReopenWithCF({"pikachu"}, options);
   MakeTables(3, "p", "q", 1);
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(2, TotalLiveFiles(1));
   ASSERT_EQ(2, GetSstFileCount(options.db_paths[0].path));
   ASSERT_EQ(0, GetSstFileCount(options.db_paths[1].path));
@@ -1849,7 +1873,7 @@ TEST_P(DBTestUniversalManualCompactionOutputPathId,
   CompactRangeOptions compact_options;
   compact_options.target_path_id = 1;
   compact_options.exclusive_manual_compaction = exclusive_manual_compaction_;
-  ASSERT_OK(db_->CompactRange(compact_options, handles_[1], nullptr, nullptr));
+  db_->CompactRange(compact_options, handles_[1], nullptr, nullptr);
   ASSERT_EQ(1, TotalLiveFiles(1));
   ASSERT_EQ(0, GetSstFileCount(options.db_paths[0].path));
   ASSERT_EQ(1, GetSstFileCount(options.db_paths[1].path));
@@ -1872,7 +1896,7 @@ TEST_P(DBTestUniversalManualCompactionOutputPathId,
   // Full compaction to DB path 0
   compact_options.target_path_id = 0;
   compact_options.exclusive_manual_compaction = exclusive_manual_compaction_;
-  ASSERT_OK(db_->CompactRange(compact_options, handles_[1], nullptr, nullptr));
+  db_->CompactRange(compact_options, handles_[1], nullptr, nullptr);
   ASSERT_EQ(1, TotalLiveFiles(1));
   ASSERT_EQ(1, GetSstFileCount(options.db_paths[0].path));
   ASSERT_EQ(0, GetSstFileCount(options.db_paths[1].path));
@@ -1884,12 +1908,12 @@ TEST_P(DBTestUniversalManualCompactionOutputPathId,
                   .IsInvalidArgument());
 }
 
-INSTANTIATE_TEST_CASE_P(OutputPathId,
+INSTANTIATE_TEST_CASE_P(DBTestUniversalManualCompactionOutputPathId,
                         DBTestUniversalManualCompactionOutputPathId,
                         ::testing::Combine(::testing::Values(1, 8),
                                            ::testing::Bool()));
 
-TEST_F(DBTestUniversalCompaction2, BasicL0toL1) {
+TEST_F(DBTestUniversalDeleteTrigCompaction, BasicL0toL1) {
   const int kNumKeys = 3000;
   const int kWindowSize = 100;
   const int kNumDelsTrigger = 90;
@@ -1909,29 +1933,28 @@ TEST_F(DBTestUniversalCompaction2, BasicL0toL1) {
   // during flush
   int i;
   for (i = 0; i < 2000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   //  MoveFilesToLevel(6);
-  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr);
 
   for (i = 1999; i < kNumKeys; ++i) {
     if (i >= kNumKeys - kWindowSize &&
         i < kNumKeys - kWindowSize + kNumDelsTrigger) {
-      ASSERT_OK(Delete(Key(i)));
+      Delete(Key(i));
     } else {
-      ASSERT_OK(Put(Key(i), "val"));
+      Put(Key(i), "val");
     }
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(0, NumTableFilesAtLevel(0));
   ASSERT_GT(NumTableFilesAtLevel(6), 0);
 }
 
-#if defined(ENABLE_SINGLE_LEVEL_DTC)
-TEST_F(DBTestUniversalCompaction2, SingleLevel) {
+TEST_F(DBTestUniversalDeleteTrigCompaction, SingleLevel) {
   const int kNumKeys = 3000;
   const int kWindowSize = 100;
   const int kNumDelsTrigger = 90;
@@ -1952,26 +1975,25 @@ TEST_F(DBTestUniversalCompaction2, SingleLevel) {
   // during flush
   int i;
   for (i = 0; i < 2000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
 
   for (i = 1999; i < kNumKeys; ++i) {
     if (i >= kNumKeys - kWindowSize &&
         i < kNumKeys - kWindowSize + kNumDelsTrigger) {
-      ASSERT_OK(Delete(Key(i)));
+      Delete(Key(i));
     } else {
-      ASSERT_OK(Put(Key(i), "val"));
+      Put(Key(i), "val");
     }
   }
-  ASSERT_OK(Flush()(;
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(1, NumTableFilesAtLevel(0));
 }
-#endif  // ENABLE_SINGLE_LEVEL_DTC
 
-TEST_F(DBTestUniversalCompaction2, MultipleLevels) {
+TEST_F(DBTestUniversalDeleteTrigCompaction, MultipleLevels) {
   const int kWindowSize = 100;
   const int kNumDelsTrigger = 90;
 
@@ -1990,50 +2012,50 @@ TEST_F(DBTestUniversalCompaction2, MultipleLevels) {
   // during flush
   int i;
   for (i = 0; i < 500; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 500; i < 1000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 1000; i < 1500; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 1500; i < 2000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(0, NumTableFilesAtLevel(0));
   ASSERT_GT(NumTableFilesAtLevel(6), 0);
 
   for (i = 1999; i < 2333; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 2333; i < 2666; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 2666; i < 2999; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(0, NumTableFilesAtLevel(0));
   ASSERT_GT(NumTableFilesAtLevel(6), 0);
   ASSERT_GT(NumTableFilesAtLevel(5), 0);
 
   for (i = 1900; i < 2100; ++i) {
-    ASSERT_OK(Delete(Key(i)));
+    Delete(Key(i));
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(0, NumTableFilesAtLevel(0));
   ASSERT_EQ(0, NumTableFilesAtLevel(1));
   ASSERT_EQ(0, NumTableFilesAtLevel(2));
@@ -2043,7 +2065,7 @@ TEST_F(DBTestUniversalCompaction2, MultipleLevels) {
   ASSERT_GT(NumTableFilesAtLevel(6), 0);
 }
 
-TEST_F(DBTestUniversalCompaction2, OverlappingL0) {
+TEST_F(DBTestUniversalDeleteTrigCompaction, OverlappingL0) {
   const int kWindowSize = 100;
   const int kNumDelsTrigger = 90;
 
@@ -2062,28 +2084,28 @@ TEST_F(DBTestUniversalCompaction2, OverlappingL0) {
   // during flush
   int i;
   for (i = 0; i < 2000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 2000; i < 3000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 3500; i < 4000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   for (i = 2900; i < 3100; ++i) {
-    ASSERT_OK(Delete(Key(i)));
+    Delete(Key(i));
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(2, NumTableFilesAtLevel(0));
   ASSERT_GT(NumTableFilesAtLevel(6), 0);
 }
 
-TEST_F(DBTestUniversalCompaction2, IngestBehind) {
+TEST_F(DBTestUniversalDeleteTrigCompaction, IngestBehind) {
   const int kNumKeys = 3000;
   const int kWindowSize = 100;
   const int kNumDelsTrigger = 90;
@@ -2104,127 +2126,35 @@ TEST_F(DBTestUniversalCompaction2, IngestBehind) {
   // during flush
   int i;
   for (i = 0; i < 2000; ++i) {
-    ASSERT_OK(Put(Key(i), "val"));
+    Put(Key(i), "val");
   }
-  ASSERT_OK(Flush());
+  Flush();
   //  MoveFilesToLevel(6);
-  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr);
 
   for (i = 1999; i < kNumKeys; ++i) {
     if (i >= kNumKeys - kWindowSize &&
         i < kNumKeys - kWindowSize + kNumDelsTrigger) {
-      ASSERT_OK(Delete(Key(i)));
+      Delete(Key(i));
     } else {
-      ASSERT_OK(Put(Key(i), "val"));
+      Put(Key(i), "val");
     }
   }
-  ASSERT_OK(Flush());
+  Flush();
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_EQ(0, NumTableFilesAtLevel(0));
   ASSERT_EQ(0, NumTableFilesAtLevel(6));
   ASSERT_GT(NumTableFilesAtLevel(5), 0);
 }
 
-TEST_F(DBTestUniversalCompaction2, PeriodicCompactionDefault) {
-  Options options;
-  options.compaction_style = kCompactionStyleUniversal;
-  options.env = env_;
-  KeepFilterFactory* filter = new KeepFilterFactory(true);
-  options.compaction_filter_factory.reset(filter);
-  Reopen(options);
-  ASSERT_EQ(30 * 24 * 60 * 60,
-            dbfull()->GetOptions().periodic_compaction_seconds);
-
-  KeepFilter df;
-  options.compaction_filter_factory.reset();
-  options.compaction_filter = &df;
-  Reopen(options);
-  ASSERT_EQ(30 * 24 * 60 * 60,
-            dbfull()->GetOptions().periodic_compaction_seconds);
-
-  options.ttl = 60 * 24 * 60 * 60;
-  options.compaction_filter = nullptr;
-  Reopen(options);
-  ASSERT_EQ(60 * 24 * 60 * 60,
-            dbfull()->GetOptions().periodic_compaction_seconds);
-}
-
-TEST_F(DBTestUniversalCompaction2, PeriodicCompaction) {
-  Options opts = CurrentOptions();
-  opts.env = env_;
-  opts.compaction_style = kCompactionStyleUniversal;
-  opts.level0_file_num_compaction_trigger = 10;
-  opts.max_open_files = -1;
-  opts.compaction_options_universal.size_ratio = 10;
-  opts.compaction_options_universal.min_merge_width = 2;
-  opts.compaction_options_universal.max_size_amplification_percent = 200;
-  opts.periodic_compaction_seconds = 48 * 60 * 60;  // 2 days
-  opts.num_levels = 5;
-  env_->SetMockSleep();
-  Reopen(opts);
-
-  // NOTE: Presumed unnecessary and removed: resetting mock time in env
-
-  int periodic_compactions = 0;
-  int start_level = -1;
-  int output_level = -1;
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-      "UniversalCompactionPicker::PickPeriodicCompaction:Return",
-      [&](void* arg) {
-        Compaction* compaction = reinterpret_cast<Compaction*>(arg);
-        ASSERT_TRUE(arg != nullptr);
-        ASSERT_TRUE(compaction->compaction_reason() ==
-                    CompactionReason::kPeriodicCompaction);
-        start_level = compaction->start_level();
-        output_level = compaction->output_level();
-        periodic_compactions++;
-      });
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
-
-  // Case 1: Oldest flushed file excceeds periodic compaction threshold.
-  ASSERT_OK(Put("foo", "bar"));
-  ASSERT_OK(Flush());
-  ASSERT_EQ(0, periodic_compactions);
-  // Move clock forward so that the flushed file would qualify periodic
-  // compaction.
-  env_->MockSleepForSeconds(48 * 60 * 60 + 100);
-
-  // Another flush would trigger compaction the oldest file.
-  ASSERT_OK(Put("foo", "bar2"));
-  ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
-
-  ASSERT_EQ(1, periodic_compactions);
-  ASSERT_EQ(0, start_level);
-  ASSERT_EQ(4, output_level);
-
-  // Case 2: Oldest compacted file excceeds periodic compaction threshold
-  periodic_compactions = 0;
-  // A flush doesn't trigger a periodic compaction when threshold not hit
-  ASSERT_OK(Put("foo", "bar2"));
-  ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
-  ASSERT_EQ(0, periodic_compactions);
-
-  // After periodic compaction threshold hits, a flush will trigger
-  // a compaction
-  ASSERT_OK(Put("foo", "bar2"));
-  env_->MockSleepForSeconds(48 * 60 * 60 + 100);
-  ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
-  ASSERT_EQ(1, periodic_compactions);
-  ASSERT_EQ(0, start_level);
-  ASSERT_EQ(4, output_level);
-}
-
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // !defined(ROCKSDB_LITE)
 
 int main(int argc, char** argv) {
 #if !defined(ROCKSDB_LITE)
-  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
+  rocksdb::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 #else

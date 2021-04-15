@@ -13,7 +13,7 @@
 #include "table/table_properties_internal.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 const uint32_t TablePropertiesCollectorFactory::Context::kUnknownColumnFamily =
     port::kMaxInt32;
@@ -125,11 +125,10 @@ std::string TableProperties::ToString(
                  prop_delim, kv_delim);
 
   AppendProperty(result, "column family ID",
-                 column_family_id ==
-                         ROCKSDB_NAMESPACE::TablePropertiesCollectorFactory::
-                             Context::kUnknownColumnFamily
+                 column_family_id == rocksdb::TablePropertiesCollectorFactory::
+                                         Context::kUnknownColumnFamily
                      ? std::string("N/A")
-                     : ROCKSDB_NAMESPACE::ToString(column_family_id),
+                     : rocksdb::ToString(column_family_id),
                  prop_delim, kv_delim);
   AppendProperty(
       result, "column family name",
@@ -168,11 +167,6 @@ std::string TableProperties::ToString(
   AppendProperty(result, "file creation time", file_creation_time, prop_delim,
                  kv_delim);
 
-  // DB identity and DB session ID
-  AppendProperty(result, "DB identity", db_id, prop_delim, kv_delim);
-  AppendProperty(result, "DB session identity", db_session_id, prop_delim,
-                 kv_delim);
-
   return result;
 }
 
@@ -193,29 +187,6 @@ void TableProperties::Add(const TableProperties& tp) {
   num_range_deletions += tp.num_range_deletions;
 }
 
-std::map<std::string, uint64_t>
-TableProperties::GetAggregatablePropertiesAsMap() const {
-  std::map<std::string, uint64_t> rv;
-  rv["data_size"] = data_size;
-  rv["index_size"] = index_size;
-  rv["index_partitions"] = index_partitions;
-  rv["top_level_index_size"] = top_level_index_size;
-  rv["filter_size"] = filter_size;
-  rv["raw_key_size"] = raw_key_size;
-  rv["raw_value_size"] = raw_value_size;
-  rv["num_data_blocks"] = num_data_blocks;
-  rv["num_entries"] = num_entries;
-  rv["num_deletions"] = num_deletions;
-  rv["num_merge_operands"] = num_merge_operands;
-  rv["num_range_deletions"] = num_range_deletions;
-  return rv;
-}
-
-const std::string TablePropertiesNames::kDbId = "rocksdb.creating.db.identity";
-const std::string TablePropertiesNames::kDbSessionId =
-    "rocksdb.creating.session.identity";
-const std::string TablePropertiesNames::kDbHostId =
-    "rocksdb.creating.host.identity";
 const std::string TablePropertiesNames::kDataSize  =
     "rocksdb.data.size";
 const std::string TablePropertiesNames::kIndexSize =
@@ -297,4 +268,4 @@ Status SeekToRangeDelBlock(InternalIterator* meta_iter, bool* is_found,
   return SeekToMetaBlock(meta_iter, kRangeDelBlock, is_found, block_handle);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

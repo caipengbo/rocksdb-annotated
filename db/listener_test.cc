@@ -3,13 +3,13 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
-#include "db/blob/blob_index.h"
 #include "db/db_impl/db_impl.h"
 #include "db/db_test_util.h"
 #include "db/dbformat.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
 #include "file/filename.h"
+#include "logging/logging.h"
 #include "memtable/hash_linklist_rep.h"
 #include "monitoring/statistics.h"
 #include "rocksdb/cache.h"
@@ -23,6 +23,8 @@
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/table.h"
 #include "rocksdb/table_properties.h"
+#include "table/block_based/block_based_table_factory.h"
+#include "table/plain/plain_table_factory.h"
 #include "test_util/sync_point.h"
 #include "test_util/testharness.h"
 #include "test_util/testutil.h"
@@ -34,44 +36,33 @@
 
 #ifndef ROCKSDB_LITE
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class EventListenerTest : public DBTestBase {
  public:
-  EventListenerTest() : DBTestBase("/listener_test", /*env_do_fsync=*/true) {}
-
-  static std::string BlobStr(uint64_t blob_file_number, uint64_t offset,
-                             uint64_t size) {
-    std::string blob_index;
-    BlobIndex::EncodeBlob(&blob_index, blob_file_number, offset, size,
-                          kNoCompression);
-    return blob_index;
-  }
+  EventListenerTest() : DBTestBase("/listener_test") {}
 
   const size_t k110KB = 110 << 10;
 };
 
-struct TestPropertiesCollector
-    : public ROCKSDB_NAMESPACE::TablePropertiesCollector {
-  ROCKSDB_NAMESPACE::Status AddUserKey(
-      const ROCKSDB_NAMESPACE::Slice& /*key*/,
-      const ROCKSDB_NAMESPACE::Slice& /*value*/,
-      ROCKSDB_NAMESPACE::EntryType /*type*/,
-      ROCKSDB_NAMESPACE::SequenceNumber /*seq*/,
-      uint64_t /*file_size*/) override {
+struct TestPropertiesCollector : public rocksdb::TablePropertiesCollector {
+  rocksdb::Status AddUserKey(const rocksdb::Slice& /*key*/,
+                             const rocksdb::Slice& /*value*/,
+                             rocksdb::EntryType /*type*/,
+                             rocksdb::SequenceNumber /*seq*/,
+                             uint64_t /*file_size*/) override {
     return Status::OK();
   }
-  ROCKSDB_NAMESPACE::Status Finish(
-      ROCKSDB_NAMESPACE::UserCollectedProperties* properties) override {
+  rocksdb::Status Finish(
+      rocksdb::UserCollectedProperties* properties) override {
     properties->insert({"0", "1"});
     return Status::OK();
   }
 
   const char* Name() const override { return "TestTablePropertiesCollector"; }
 
-  ROCKSDB_NAMESPACE::UserCollectedProperties GetReadableProperties()
-      const override {
-    ROCKSDB_NAMESPACE::UserCollectedProperties ret;
+  rocksdb::UserCollectedProperties GetReadableProperties() const override {
+    rocksdb::UserCollectedProperties ret;
     ret["2"] = "3";
     return ret;
   }
@@ -88,47 +79,11 @@ class TestPropertiesCollectorFactory : public TablePropertiesCollectorFactory {
 
 class TestCompactionListener : public EventListener {
  public:
-  explicit TestCompactionListener(EventListenerTest* test) : test_(test) {}
-
   void OnCompactionCompleted(DB *db, const CompactionJobInfo& ci) override {
     std::lock_guard<std::mutex> lock(mutex_);
     compacted_dbs_.push_back(db);
     ASSERT_GT(ci.input_files.size(), 0U);
-    ASSERT_EQ(ci.input_files.size(), ci.input_file_infos.size());
-
-    for (size_t i = 0; i < ci.input_file_infos.size(); ++i) {
-      ASSERT_EQ(ci.input_file_infos[i].level, ci.base_input_level);
-      ASSERT_EQ(ci.input_file_infos[i].file_number,
-                TableFileNameToNumber(ci.input_files[i]));
-    }
-
     ASSERT_GT(ci.output_files.size(), 0U);
-    ASSERT_EQ(ci.output_files.size(), ci.output_file_infos.size());
-
-    ASSERT_TRUE(test_);
-    ASSERT_EQ(test_->db_, db);
-
-    std::vector<std::vector<FileMetaData>> files_by_level;
-    test_->dbfull()->TEST_GetFilesMetaData(test_->handles_[ci.cf_id],
-                                           &files_by_level);
-    ASSERT_GT(files_by_level.size(), ci.output_level);
-
-    for (size_t i = 0; i < ci.output_file_infos.size(); ++i) {
-      ASSERT_EQ(ci.output_file_infos[i].level, ci.output_level);
-      ASSERT_EQ(ci.output_file_infos[i].file_number,
-                TableFileNameToNumber(ci.output_files[i]));
-
-      auto it = std::find_if(
-          files_by_level[ci.output_level].begin(),
-          files_by_level[ci.output_level].end(), [&](const FileMetaData& meta) {
-            return meta.fd.GetNumber() == ci.output_file_infos[i].file_number;
-          });
-      ASSERT_NE(it, files_by_level[ci.output_level].end());
-
-      ASSERT_EQ(ci.output_file_infos[i].oldest_blob_file_number,
-                it->oldest_blob_file_number);
-    }
-
     ASSERT_EQ(db->GetEnv()->GetThreadID(), ci.thread_id);
     ASSERT_GT(ci.thread_id, 0U);
 
@@ -143,7 +98,6 @@ class TestCompactionListener : public EventListener {
     }
   }
 
-  EventListenerTest* test_;
   std::vector<DB*> compacted_dbs_;
   std::mutex mutex_;
 };
@@ -171,19 +125,13 @@ TEST_F(EventListenerTest, OnSingleDBCompactionTest) {
   options.table_properties_collector_factories.push_back(
       std::make_shared<TestPropertiesCollectorFactory>());
 
-  TestCompactionListener* listener = new TestCompactionListener(this);
+  TestCompactionListener* listener = new TestCompactionListener();
   options.listeners.emplace_back(listener);
   std::vector<std::string> cf_names = {
       "pikachu", "ilya", "muromec", "dobrynia",
       "nikitich", "alyosha", "popovich"};
   CreateAndReopenWithCF(cf_names, options);
   ASSERT_OK(Put(1, "pikachu", std::string(90000, 'p')));
-
-  WriteBatch batch;
-  ASSERT_OK(WriteBatchInternal::PutBlobIndex(&batch, 1, "ditto",
-                                             BlobStr(123, 0, 1 << 10)));
-  ASSERT_OK(dbfull()->Write(WriteOptions(), &batch));
-
   ASSERT_OK(Put(2, "ilya", std::string(90000, 'i')));
   ASSERT_OK(Put(3, "muromec", std::string(90000, 'm')));
   ASSERT_OK(Put(4, "dobrynia", std::string(90000, 'd')));
@@ -192,10 +140,12 @@ TEST_F(EventListenerTest, OnSingleDBCompactionTest) {
   ASSERT_OK(Put(7, "popovich", std::string(90000, 'p')));
   for (int i = 1; i < 8; ++i) {
     ASSERT_OK(Flush(i));
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+    const Slice kRangeStart = "a";
+    const Slice kRangeEnd = "z";
     ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), handles_[i],
-                                     nullptr, nullptr));
-    ASSERT_OK(dbfull()->TEST_WaitForCompact());
+                                     &kRangeStart, &kRangeEnd));
+    dbfull()->TEST_WaitForFlushMemTable();
+    dbfull()->TEST_WaitForCompact();
   }
 
   ASSERT_EQ(listener->compacted_dbs_.size(), cf_names.size());
@@ -204,16 +154,65 @@ TEST_F(EventListenerTest, OnSingleDBCompactionTest) {
   }
 }
 
+class TestSubcompactionListener : public EventListener {
+ public:
+  TestSubcompactionListener() : compacted_(0) {}
+  void OnSubcompactionCompleted(const SubcompactionJobInfo& /*si*/) override {
+    compacted_.fetch_add(1);
+  }
+
+  std::atomic<int> compacted_;
+};
+
+TEST_F(EventListenerTest, OnSingleDBSubcompactionTest) {
+  const int kNumL0Files = 8;
+
+  Options options;
+  options.env = CurrentOptions().env;
+  options.create_if_missing = true;
+  options.max_subcompactions = 2;
+  options.compaction_style = kCompactionStyleLevel;
+  options.write_buffer_size = k110KB * 2;
+  options.target_file_size_base = options.write_buffer_size;
+  options.compression = kNoCompression;
+  options.level0_file_num_compaction_trigger = kNumL0Files;
+  options.table_properties_collector_factories.push_back(
+      std::make_shared<TestPropertiesCollectorFactory>());
+
+  TestSubcompactionListener* listener = new TestSubcompactionListener();
+  options.listeners.emplace_back(listener);
+  Reopen(options);
+  ASSERT_OK(Put("k1", std::string(90000, 'k')));
+  ASSERT_OK(Put("k4", std::string(90000, 'k')));
+  ASSERT_OK(dbfull()->CompactRange(
+      CompactRangeOptions(), db_->DefaultColumnFamily(), nullptr, nullptr));
+  // Three large files overlapped with L1 will trigger at least two
+  // subcompactions.
+  ASSERT_OK(Put("k1", std::string(90000, 'k')));
+  ASSERT_OK(Put("k2", std::string(90000, 'k')));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("k2", std::string(90000, 'k')));
+  ASSERT_OK(Put("k3", std::string(90000, 'k')));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("k3", std::string(90000, 'k')));
+  ASSERT_OK(Put("k4", std::string(90000, 'k')));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->RunManualCompaction(
+      reinterpret_cast<ColumnFamilyHandleImpl*>(db_->DefaultColumnFamily())
+          ->cfd(),
+      0 /* input_level */, 1 /* output_level */, CompactRangeOptions(),
+      nullptr /* begin */, nullptr /* end */, true /* exclusive */,
+      true /* disallow_trivial_move */,
+      port::kMaxUint64 /* max_file_num_to_ignore */));
+  ASSERT_EQ(listener->compacted_.load(), 2);
+}
+
 // This simple Listener can only handle one flush at a time.
 class TestFlushListener : public EventListener {
  public:
-  TestFlushListener(Env* env, EventListenerTest* test)
-      : slowdown_count(0), stop_count(0), db_closed(), env_(env), test_(test) {
+  explicit TestFlushListener(Env* env)
+      : slowdown_count(0), stop_count(0), db_closed(), env_(env) {
     db_closed = false;
-  }
-
-  virtual ~TestFlushListener() {
-    prev_fc_info_.status.PermitUncheckedError();  // Ignore the status
   }
   void OnTableFileCreated(
       const TableFileCreationInfo& info) override {
@@ -228,8 +227,6 @@ class TestFlushListener : public EventListener {
     ASSERT_GT(info.table_properties.raw_value_size, 0U);
     ASSERT_GT(info.table_properties.num_data_blocks, 0U);
     ASSERT_GT(info.table_properties.num_entries, 0U);
-    ASSERT_EQ(info.file_checksum, kUnknownFileChecksum);
-    ASSERT_EQ(info.file_checksum_func_name, kUnknownFileChecksumFuncName);
 
 #ifdef ROCKSDB_USING_THREAD_STATUS
     // Verify the id of the current thread that created this table
@@ -266,27 +263,6 @@ class TestFlushListener : public EventListener {
     ASSERT_EQ(prev_fc_info_.cf_name, info.cf_name);
     ASSERT_EQ(prev_fc_info_.job_id, info.job_id);
     ASSERT_EQ(prev_fc_info_.file_path, info.file_path);
-    ASSERT_EQ(TableFileNameToNumber(info.file_path), info.file_number);
-
-    // Note: the following chunk relies on the notification pertaining to the
-    // database pointed to by DBTestBase::db_, and is thus bypassed when
-    // that assumption does not hold (see the test case MultiDBMultiListeners
-    // below).
-    ASSERT_TRUE(test_);
-    if (db == test_->db_) {
-      std::vector<std::vector<FileMetaData>> files_by_level;
-      test_->dbfull()->TEST_GetFilesMetaData(test_->handles_[info.cf_id],
-                                             &files_by_level);
-
-      ASSERT_FALSE(files_by_level.empty());
-      auto it = std::find_if(files_by_level[0].begin(), files_by_level[0].end(),
-                             [&](const FileMetaData& meta) {
-                               return meta.fd.GetNumber() == info.file_number;
-                             });
-      ASSERT_NE(it, files_by_level[0].end());
-      ASSERT_EQ(info.oldest_blob_file_number, it->oldest_blob_file_number);
-    }
-
     ASSERT_EQ(db->GetEnv()->GetThreadID(), info.thread_id);
     ASSERT_GT(info.thread_id, 0U);
     ASSERT_EQ(info.table_properties.user_collected_properties.find("0")->second,
@@ -303,7 +279,6 @@ class TestFlushListener : public EventListener {
 
  protected:
   Env* env_;
-  EventListenerTest* test_;
 };
 
 TEST_F(EventListenerTest, OnSingleDBFlushTest) {
@@ -313,7 +288,7 @@ TEST_F(EventListenerTest, OnSingleDBFlushTest) {
 #ifdef ROCKSDB_USING_THREAD_STATUS
   options.enable_thread_tracking = true;
 #endif  // ROCKSDB_USING_THREAD_STATUS
-  TestFlushListener* listener = new TestFlushListener(options.env, this);
+  TestFlushListener* listener = new TestFlushListener(options.env);
   options.listeners.emplace_back(listener);
   std::vector<std::string> cf_names = {
       "pikachu", "ilya", "muromec", "dobrynia",
@@ -323,12 +298,6 @@ TEST_F(EventListenerTest, OnSingleDBFlushTest) {
   CreateAndReopenWithCF(cf_names, options);
 
   ASSERT_OK(Put(1, "pikachu", std::string(90000, 'p')));
-
-  WriteBatch batch;
-  ASSERT_OK(WriteBatchInternal::PutBlobIndex(&batch, 1, "ditto",
-                                             BlobStr(456, 0, 1 << 10)));
-  ASSERT_OK(dbfull()->Write(WriteOptions(), &batch));
-
   ASSERT_OK(Put(2, "ilya", std::string(90000, 'i')));
   ASSERT_OK(Put(3, "muromec", std::string(90000, 'm')));
   ASSERT_OK(Put(4, "dobrynia", std::string(90000, 'd')));
@@ -337,7 +306,7 @@ TEST_F(EventListenerTest, OnSingleDBFlushTest) {
   ASSERT_OK(Put(7, "popovich", std::string(90000, 'p')));
   for (int i = 1; i < 8; ++i) {
     ASSERT_OK(Flush(i));
-    ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+    dbfull()->TEST_WaitForFlushMemTable();
     ASSERT_EQ(listener->flushed_dbs_.size(), i);
     ASSERT_EQ(listener->flushed_column_family_names_.size(), i);
   }
@@ -356,7 +325,7 @@ TEST_F(EventListenerTest, MultiCF) {
 #ifdef ROCKSDB_USING_THREAD_STATUS
   options.enable_thread_tracking = true;
 #endif  // ROCKSDB_USING_THREAD_STATUS
-  TestFlushListener* listener = new TestFlushListener(options.env, this);
+  TestFlushListener* listener = new TestFlushListener(options.env);
   options.listeners.emplace_back(listener);
   options.table_properties_collector_factories.push_back(
       std::make_shared<TestPropertiesCollectorFactory>());
@@ -397,7 +366,7 @@ TEST_F(EventListenerTest, MultiDBMultiListeners) {
   const int kNumDBs = 5;
   const int kNumListeners = 10;
   for (int i = 0; i < kNumListeners; ++i) {
-    listeners.emplace_back(new TestFlushListener(options.env, this));
+    listeners.emplace_back(new TestFlushListener(options.env));
   }
 
   std::vector<std::string> cf_names = {
@@ -421,7 +390,7 @@ TEST_F(EventListenerTest, MultiDBMultiListeners) {
     ASSERT_OK(DB::Open(options, dbname_ + ToString(d), &db));
     for (size_t c = 0; c < cf_names.size(); ++c) {
       ColumnFamilyHandle* handle;
-      ASSERT_OK(db->CreateColumnFamily(cf_opts, cf_names[c], &handle));
+      db->CreateColumnFamily(cf_opts, cf_names[c], &handle);
       handles.push_back(handle);
     }
 
@@ -439,8 +408,7 @@ TEST_F(EventListenerTest, MultiDBMultiListeners) {
   for (size_t c = 0; c < cf_names.size(); ++c) {
     for (int d = 0; d < kNumDBs; ++d) {
       ASSERT_OK(dbs[d]->Flush(FlushOptions(), vec_handles[d][c]));
-      ASSERT_OK(
-          static_cast_with_check<DBImpl>(dbs[d])->TEST_WaitForFlushMemTable());
+      reinterpret_cast<DBImpl*>(dbs[d])->TEST_WaitForFlushMemTable();
     }
   }
 
@@ -475,7 +443,7 @@ TEST_F(EventListenerTest, DisableBGCompaction) {
 #ifdef ROCKSDB_USING_THREAD_STATUS
   options.enable_thread_tracking = true;
 #endif  // ROCKSDB_USING_THREAD_STATUS
-  TestFlushListener* listener = new TestFlushListener(options.env, this);
+  TestFlushListener* listener = new TestFlushListener(options.env);
   const int kCompactionTrigger = 1;
   const int kSlowdownTrigger = 5;
   const int kStopTrigger = 100;
@@ -499,10 +467,10 @@ TEST_F(EventListenerTest, DisableBGCompaction) {
   // keep writing until writes are forced to stop.
   for (int i = 0; static_cast<int>(cf_meta.file_count) < kSlowdownTrigger * 10;
        ++i) {
-    ASSERT_OK(Put(1, ToString(i), std::string(10000, 'x'), WriteOptions()));
+    Put(1, ToString(i), std::string(10000, 'x'), WriteOptions());
     FlushOptions fo;
     fo.allow_write_stall = true;
-    ASSERT_OK(db_->Flush(fo, handles_[1]));
+    db_->Flush(fo, handles_[1]);
     db_->GetColumnFamilyMetaData(handles_[1], &cf_meta);
   }
   ASSERT_GE(listener->slowdown_count, kSlowdownTrigger * 9);
@@ -539,7 +507,7 @@ TEST_F(EventListenerTest, CompactionReasonLevel) {
   for (int i = 0; i < 4; i++) {
     GenerateNewRandomFile(&rnd);
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_EQ(listener->compaction_reasons_.size(), 1);
   ASSERT_EQ(listener->compaction_reasons_[0],
@@ -556,14 +524,14 @@ TEST_F(EventListenerTest, CompactionReasonLevel) {
   }
 
   // Do a trivial move from L0 -> L1
-  ASSERT_OK(db_->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  db_->CompactRange(CompactRangeOptions(), nullptr, nullptr);
 
   options.max_bytes_for_level_base = 1;
   Close();
   listener->compaction_reasons_.clear();
   Reopen(options);
 
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
   ASSERT_GT(listener->compaction_reasons_.size(), 1);
 
   for (auto compaction_reason : listener->compaction_reasons_) {
@@ -575,7 +543,7 @@ TEST_F(EventListenerTest, CompactionReasonLevel) {
   listener->compaction_reasons_.clear();
   Reopen(options);
 
-  ASSERT_OK(Put("key", "value"));
+  Put("key", "value");
   CompactRangeOptions cro;
   cro.bottommost_level_compaction = BottommostLevelCompaction::kForceOptimized;
   ASSERT_OK(db_->CompactRange(cro, nullptr, nullptr));
@@ -609,7 +577,7 @@ TEST_F(EventListenerTest, CompactionReasonUniversal) {
   for (int i = 0; i < 8; i++) {
     GenerateNewRandomFile(&rnd);
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(listener->compaction_reasons_.size(), 0);
   for (auto compaction_reason : listener->compaction_reasons_) {
@@ -627,7 +595,7 @@ TEST_F(EventListenerTest, CompactionReasonUniversal) {
   for (int i = 0; i < 8; i++) {
     GenerateNewRandomFile(&rnd);
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(listener->compaction_reasons_.size(), 0);
   for (auto compaction_reason : listener->compaction_reasons_) {
@@ -639,7 +607,7 @@ TEST_F(EventListenerTest, CompactionReasonUniversal) {
   listener->compaction_reasons_.clear();
   Reopen(options);
 
-  ASSERT_OK(db_->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  db_->CompactRange(CompactRangeOptions(), nullptr, nullptr);
 
   ASSERT_GT(listener->compaction_reasons_.size(), 0);
   for (auto compaction_reason : listener->compaction_reasons_) {
@@ -668,7 +636,7 @@ TEST_F(EventListenerTest, CompactionReasonFIFO) {
   for (int i = 0; i < 4; i++) {
     GenerateNewRandomFile(&rnd);
   }
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->TEST_WaitForCompact();
 
   ASSERT_GT(listener->compaction_reasons_.size(), 0);
   for (auto compaction_reason : listener->compaction_reasons_) {
@@ -680,7 +648,7 @@ class TableFileCreationListener : public EventListener {
  public:
   class TestEnv : public EnvWrapper {
    public:
-    explicit TestEnv(Env* t) : EnvWrapper(t) {}
+    TestEnv() : EnvWrapper(Env::Default()) {}
 
     void SetStatus(Status s) { status_ = s; }
 
@@ -692,7 +660,7 @@ class TableFileCreationListener : public EventListener {
           return status_;
         }
       }
-      return target()->NewWritableFile(fname, result, options);
+      return Env::Default()->NewWritableFile(fname, result, options);
     }
 
    private:
@@ -755,8 +723,6 @@ class TableFileCreationListener : public EventListener {
     ASSERT_GT(info.cf_name.size(), 0U);
     ASSERT_GT(info.file_path.size(), 0U);
     ASSERT_GT(info.job_id, 0);
-    ASSERT_EQ(info.file_checksum, kUnknownFileChecksum);
-    ASSERT_EQ(info.file_checksum_func_name, kUnknownFileChecksumFuncName);
     if (info.status.ok()) {
       ASSERT_GT(info.table_properties.data_size, 0U);
       ASSERT_GT(info.table_properties.raw_key_size, 0U);
@@ -770,6 +736,7 @@ class TableFileCreationListener : public EventListener {
     }
   }
 
+  TestEnv test_env;
   int started_[2];
   int finished_[2];
   int failure_[2];
@@ -778,48 +745,44 @@ class TableFileCreationListener : public EventListener {
 TEST_F(EventListenerTest, TableFileCreationListenersTest) {
   auto listener = std::make_shared<TableFileCreationListener>();
   Options options;
-  std::unique_ptr<TableFileCreationListener::TestEnv> test_env(
-      new TableFileCreationListener::TestEnv(CurrentOptions().env));
   options.create_if_missing = true;
   options.listeners.push_back(listener);
-  options.env = test_env.get();
+  options.env = &listener->test_env;
   DestroyAndReopen(options);
 
   ASSERT_OK(Put("foo", "aaa"));
   ASSERT_OK(Put("bar", "bbb"));
   ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+  dbfull()->TEST_WaitForFlushMemTable();
   listener->CheckAndResetCounters(1, 1, 0, 0, 0, 0);
+
   ASSERT_OK(Put("foo", "aaa1"));
   ASSERT_OK(Put("bar", "bbb1"));
-  test_env->SetStatus(Status::NotSupported("not supported"));
+  listener->test_env.SetStatus(Status::NotSupported("not supported"));
   ASSERT_NOK(Flush());
   listener->CheckAndResetCounters(1, 1, 1, 0, 0, 0);
-  test_env->SetStatus(Status::OK());
+  listener->test_env.SetStatus(Status::OK());
 
   Reopen(options);
   ASSERT_OK(Put("foo", "aaa2"));
   ASSERT_OK(Put("bar", "bbb2"));
   ASSERT_OK(Flush());
-  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+  dbfull()->TEST_WaitForFlushMemTable();
   listener->CheckAndResetCounters(1, 1, 0, 0, 0, 0);
 
   const Slice kRangeStart = "a";
   const Slice kRangeEnd = "z";
-  ASSERT_OK(
-      dbfull()->CompactRange(CompactRangeOptions(), &kRangeStart, &kRangeEnd));
-  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+  dbfull()->CompactRange(CompactRangeOptions(), &kRangeStart, &kRangeEnd);
+  dbfull()->TEST_WaitForCompact();
   listener->CheckAndResetCounters(0, 0, 0, 1, 1, 0);
 
   ASSERT_OK(Put("foo", "aaa3"));
   ASSERT_OK(Put("bar", "bbb3"));
   ASSERT_OK(Flush());
-  test_env->SetStatus(Status::NotSupported("not supported"));
-  ASSERT_NOK(
-      dbfull()->CompactRange(CompactRangeOptions(), &kRangeStart, &kRangeEnd));
-  ASSERT_NOK(dbfull()->TEST_WaitForCompact());
+  listener->test_env.SetStatus(Status::NotSupported("not supported"));
+  dbfull()->CompactRange(CompactRangeOptions(), &kRangeStart, &kRangeEnd);
+  dbfull()->TEST_WaitForCompact();
   listener->CheckAndResetCounters(1, 1, 0, 1, 1, 1);
-  Close();
 }
 
 class MemTableSealedListener : public EventListener {
@@ -840,7 +803,6 @@ public:
 TEST_F(EventListenerTest, MemTableSealedListenerTest) {
   auto listener = std::make_shared<MemTableSealedListener>();
   Options options;
-  options.env = CurrentOptions().env;
   options.create_if_missing = true;
   options.listeners.push_back(listener);
   DestroyAndReopen(options);
@@ -905,7 +867,7 @@ class BackgroundErrorListener : public EventListener {
       // can succeed.
       *bg_error = Status::OK();
       env_->drop_writes_.store(false, std::memory_order_release);
-      env_->SetMockSleep(false);
+      env_->no_slowdown_ = false;
     }
     ++counter_;
   }
@@ -925,13 +887,13 @@ TEST_F(EventListenerTest, BackgroundErrorListenerFailedFlushTest) {
 
   // the usual TEST_WaitForFlushMemTable() doesn't work for failed flushes, so
   // forge a custom one for the failed flush case.
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+  rocksdb::SyncPoint::GetInstance()->LoadDependency(
       {{"DBImpl::BGWorkFlush:done",
         "EventListenerTest:BackgroundErrorListenerFailedFlushTest:1"}});
-  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 
   env_->drop_writes_.store(true, std::memory_order_release);
-  env_->SetMockSleep();
+  env_->no_slowdown_ = true;
 
   ASSERT_OK(Put("key0", "val"));
   ASSERT_OK(Put("key1", "val"));
@@ -965,7 +927,7 @@ TEST_F(EventListenerTest, BackgroundErrorListenerFailedCompactionTest) {
   ASSERT_EQ(2, NumTableFilesAtLevel(0));
 
   env_->drop_writes_.store(true, std::memory_order_release);
-  env_->SetMockSleep();
+  env_->no_slowdown_ = true;
   ASSERT_OK(dbfull()->SetOptions({{"disable_auto_compactions", "false"}}));
   ASSERT_OK(dbfull()->TEST_WaitForCompact());
   ASSERT_EQ(1, listener->counter());
@@ -987,14 +949,6 @@ class TestFileOperationListener : public EventListener {
     file_reads_success_.store(0);
     file_writes_.store(0);
     file_writes_success_.store(0);
-    file_flushes_.store(0);
-    file_flushes_success_.store(0);
-    file_closes_.store(0);
-    file_closes_success_.store(0);
-    file_syncs_.store(0);
-    file_syncs_success_.store(0);
-    file_truncates_.store(0);
-    file_truncates_success_.store(0);
   }
 
   void OnFileReadFinish(const FileOperationInfo& info) override {
@@ -1013,56 +967,18 @@ class TestFileOperationListener : public EventListener {
     ReportDuration(info);
   }
 
-  void OnFileFlushFinish(const FileOperationInfo& info) override {
-    ++file_flushes_;
-    if (info.status.ok()) {
-      ++file_flushes_success_;
-    }
-    ReportDuration(info);
-  }
-
-  void OnFileCloseFinish(const FileOperationInfo& info) override {
-    ++file_closes_;
-    if (info.status.ok()) {
-      ++file_closes_success_;
-    }
-    ReportDuration(info);
-  }
-
-  void OnFileSyncFinish(const FileOperationInfo& info) override {
-    ++file_syncs_;
-    if (info.status.ok()) {
-      ++file_syncs_success_;
-    }
-    ReportDuration(info);
-  }
-
-  void OnFileTruncateFinish(const FileOperationInfo& info) override {
-    ++file_truncates_;
-    if (info.status.ok()) {
-      ++file_truncates_success_;
-    }
-    ReportDuration(info);
-  }
-
   bool ShouldBeNotifiedOnFileIO() override { return true; }
 
   std::atomic<size_t> file_reads_;
   std::atomic<size_t> file_reads_success_;
   std::atomic<size_t> file_writes_;
   std::atomic<size_t> file_writes_success_;
-  std::atomic<size_t> file_flushes_;
-  std::atomic<size_t> file_flushes_success_;
-  std::atomic<size_t> file_closes_;
-  std::atomic<size_t> file_closes_success_;
-  std::atomic<size_t> file_syncs_;
-  std::atomic<size_t> file_syncs_success_;
-  std::atomic<size_t> file_truncates_;
-  std::atomic<size_t> file_truncates_success_;
 
  private:
   void ReportDuration(const FileOperationInfo& info) const {
-    ASSERT_GT(info.duration.count(), 0);
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        info.finish_timestamp - info.start_timestamp);
+    ASSERT_GT(duration.count(), 0);
   }
 };
 
@@ -1074,41 +990,21 @@ TEST_F(EventListenerTest, OnFileOperationTest) {
   TestFileOperationListener* listener = new TestFileOperationListener();
   options.listeners.emplace_back(listener);
 
-  options.use_direct_io_for_flush_and_compaction = false;
-  Status s = TryReopen(options);
-  if (s.IsInvalidArgument()) {
-    options.use_direct_io_for_flush_and_compaction = false;
-  } else {
-    ASSERT_OK(s);
-  }
   DestroyAndReopen(options);
   ASSERT_OK(Put("foo", "aaa"));
-  ASSERT_OK(dbfull()->Flush(FlushOptions()));
-  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+  dbfull()->Flush(FlushOptions());
+  dbfull()->TEST_WaitForFlushMemTable();
   ASSERT_GE(listener->file_writes_.load(),
             listener->file_writes_success_.load());
   ASSERT_GT(listener->file_writes_.load(), 0);
-  ASSERT_GE(listener->file_flushes_.load(),
-            listener->file_flushes_success_.load());
-  ASSERT_GT(listener->file_flushes_.load(), 0);
   Close();
 
   Reopen(options);
   ASSERT_GE(listener->file_reads_.load(), listener->file_reads_success_.load());
   ASSERT_GT(listener->file_reads_.load(), 0);
-  ASSERT_GE(listener->file_closes_.load(),
-            listener->file_closes_success_.load());
-  ASSERT_GT(listener->file_closes_.load(), 0);
-  ASSERT_GE(listener->file_syncs_.load(), listener->file_syncs_success_.load());
-  ASSERT_GT(listener->file_syncs_.load(), 0);
-  if (true == options.use_direct_io_for_flush_and_compaction) {
-    ASSERT_GE(listener->file_truncates_.load(),
-              listener->file_truncates_success_.load());
-    ASSERT_GT(listener->file_truncates_.load(), 0);
-  }
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // ROCKSDB_LITE
 

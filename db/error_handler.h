@@ -6,24 +6,12 @@
 
 #include "monitoring/instrumented_mutex.h"
 #include "options/db_options.h"
-#include "rocksdb/io_status.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/status.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class DBImpl;
-
-// This structure is used to store the DB recovery context. The context is
-// the information that related to the recover actions. For example, it contains
-// FlushReason, which tells the flush job why this flush is called.
-struct DBRecoverContext {
-  FlushReason flush_reason;
-
-  DBRecoverContext() : flush_reason(FlushReason::kErrorRecovery) {}
-
-  DBRecoverContext(FlushReason reason) : flush_reason(reason) {}
-};
 
 class ErrorHandler {
   public:
@@ -31,18 +19,12 @@ class ErrorHandler {
                 InstrumentedMutex* db_mutex)
        : db_(db),
          db_options_(db_options),
-         cv_(db_mutex),
-         end_recovery_(false),
-         recovery_thread_(nullptr),
+         bg_error_(Status::OK()),
+         recovery_error_(Status::OK()),
          db_mutex_(db_mutex),
          auto_recovery_(false),
-         recovery_in_prog_(false),
-         soft_error_no_bg_work_(false) {
-     // Clear the checked flag for uninitialized errors
-     bg_error_.PermitUncheckedError();
-     recovery_error_.PermitUncheckedError();
-     recovery_io_error_.PermitUncheckedError();
-   }
+         recovery_in_prog_(false) {}
+   ~ErrorHandler() {}
 
    void EnableAutoRecovery() { auto_recovery_ = true; }
 
@@ -50,14 +32,11 @@ class ErrorHandler {
                                      Status::Code code,
                                      Status::SubCode subcode);
 
-   const Status& SetBGError(const Status& bg_err, BackgroundErrorReason reason);
+   Status SetBGError(const Status& bg_err, BackgroundErrorReason reason);
 
-   const Status& SetBGError(const IOStatus& bg_io_err,
-                            BackgroundErrorReason reason);
+   Status GetBGError() { return bg_error_; }
 
-   Status GetBGError() const { return bg_error_; }
-
-   Status GetRecoveryError() const { return recovery_error_; }
+   Status GetRecoveryError() { return recovery_error_; }
 
    Status ClearBGError();
 
@@ -69,17 +48,13 @@ class ErrorHandler {
     bool IsBGWorkStopped() {
       return !bg_error_.ok() &&
              (bg_error_.severity() >= Status::Severity::kHardError ||
-              !auto_recovery_ || soft_error_no_bg_work_);
+              !auto_recovery_);
     }
-
-    bool IsSoftErrorNoBGWork() { return soft_error_no_bg_work_; }
 
     bool IsRecoveryInProgress() { return recovery_in_prog_; }
 
     Status RecoverFromBGError(bool is_manual = false);
     void CancelErrorRecovery();
-
-    void EndAutoRecovery();
 
    private:
     DBImpl* db_;
@@ -88,30 +63,13 @@ class ErrorHandler {
     // A separate Status variable used to record any errors during the
     // recovery process from hard errors
     Status recovery_error_;
-    // A separate IO Status variable used to record any IO errors during
-    // the recovery process. At the same time, recovery_error_ is also set.
-    IOStatus recovery_io_error_;
-    // The condition variable used with db_mutex during auto resume for time
-    // wait.
-    InstrumentedCondVar cv_;
-    bool end_recovery_;
-    std::unique_ptr<port::Thread> recovery_thread_;
-
     InstrumentedMutex* db_mutex_;
     // A flag indicating whether automatic recovery from errors is enabled
     bool auto_recovery_;
     bool recovery_in_prog_;
-    // A flag to indicate that for the soft error, we should not allow any
-    // backrgound work execpt the work is from recovery.
-    bool soft_error_no_bg_work_;
 
-    // Used to store the context for recover, such as flush reason.
-    DBRecoverContext recover_context_;
-
-    Status OverrideNoSpaceError(const Status& bg_error, bool* auto_recovery);
+    Status OverrideNoSpaceError(Status bg_error, bool* auto_recovery);
     void RecoverFromNoSpace();
-    const Status& StartRecoverFromRetryableBGIOError(const IOStatus& io_error);
-    void RecoverFromRetryableBGIOError();
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}

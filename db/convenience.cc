@@ -11,10 +11,10 @@
 #include "db/db_impl/db_impl.h"
 #include "util/cast_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 void CancelAllBackgroundWork(DB* db, bool wait) {
-  (static_cast_with_check<DBImpl>(db->GetRootDB()))
+  (static_cast_with_check<DBImpl, DB>(db->GetRootDB()))
       ->CancelAllBackgroundWork(wait);
 }
 
@@ -28,29 +28,21 @@ Status DeleteFilesInRange(DB* db, ColumnFamilyHandle* column_family,
 Status DeleteFilesInRanges(DB* db, ColumnFamilyHandle* column_family,
                            const RangePtr* ranges, size_t n,
                            bool include_end) {
-  return (static_cast_with_check<DBImpl>(db->GetRootDB()))
+  return (static_cast_with_check<DBImpl, DB>(db->GetRootDB()))
       ->DeleteFilesInRanges(column_family, ranges, n, include_end);
 }
 
 Status VerifySstFileChecksum(const Options& options,
                              const EnvOptions& env_options,
                              const std::string& file_path) {
-  return VerifySstFileChecksum(options, env_options, ReadOptions(), file_path);
-}
-Status VerifySstFileChecksum(const Options& options,
-                             const EnvOptions& env_options,
-                             const ReadOptions& read_options,
-                             const std::string& file_path) {
-  std::unique_ptr<FSRandomAccessFile> file;
+  std::unique_ptr<RandomAccessFile> file;
   uint64_t file_size;
   InternalKeyComparator internal_comparator(options.comparator);
   ImmutableCFOptions ioptions(options);
 
-  Status s = ioptions.fs->NewRandomAccessFile(file_path,
-                                              FileOptions(env_options),
-                                              &file, nullptr);
+  Status s = ioptions.env->NewRandomAccessFile(file_path, &file, env_options);
   if (s.ok()) {
-    s = ioptions.fs->GetFileSize(file_path, IOOptions(), &file_size, nullptr);
+    s = ioptions.env->GetFileSize(file_path, &file_size);
   } else {
     return s;
   }
@@ -61,18 +53,16 @@ Status VerifySstFileChecksum(const Options& options,
   s = ioptions.table_factory->NewTableReader(
       TableReaderOptions(ioptions, options.prefix_extractor.get(), env_options,
                          internal_comparator, false /* skip_filters */,
-                         !kImmortal, false /* force_direct_prefetch */,
-                         -1 /* level */),
+                         !kImmortal, -1 /* level */),
       std::move(file_reader), file_size, &table_reader,
       false /* prefetch_index_and_filter_in_cache */);
   if (!s.ok()) {
     return s;
   }
-  s = table_reader->VerifyChecksum(read_options,
-                                   TableReaderCaller::kUserVerifyChecksum);
+  s = table_reader->VerifyChecksum(TableReaderCaller::kUserVerifyChecksum);
   return s;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 
 #endif  // ROCKSDB_LITE

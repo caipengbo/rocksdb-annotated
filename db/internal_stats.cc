@@ -10,20 +10,19 @@
 
 #include "db/internal_stats.h"
 
-#include <algorithm>
 #include <cinttypes>
+#include <algorithm>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
-#include "rocksdb/table.h"
+#include "table/block_based/block_based_table_factory.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 #ifndef ROCKSDB_LITE
 
@@ -61,7 +60,6 @@ void PrintLevelStatsHeader(char* buf, size_t len, const std::string& cf_name,
                            const std::string& group_by) {
   int written_size =
       snprintf(buf, len, "\n** Compaction Stats [%s] **\n", cf_name.c_str());
-  written_size = std::min(written_size, static_cast<int>(len));
   auto hdr = [](LevelStatType t) {
     return InternalStats::compaction_level_stats.at(t).header_name.c_str();
   };
@@ -81,7 +79,6 @@ void PrintLevelStatsHeader(char* buf, size_t len, const std::string& cf_name,
       hdr(LevelStatType::KEY_DROP));
 
   written_size += line_size;
-  written_size = std::min(written_size, static_cast<int>(len));
   snprintf(buf + written_size, len - written_size, "%s\n",
            std::string(line_size, '-').c_str());
 }
@@ -256,6 +253,7 @@ static const std::string num_running_flushes = "num-running-flushes";
 static const std::string actual_delayed_write_rate =
     "actual-delayed-write-rate";
 static const std::string is_write_stopped = "is-write-stopped";
+static const std::string is_write_stalled = "is-write-stalled";
 static const std::string estimate_oldest_key_time = "estimate-oldest-key-time";
 static const std::string block_cache_capacity = "block-cache-capacity";
 static const std::string block_cache_usage = "block-cache-usage";
@@ -340,6 +338,8 @@ const std::string DB::Properties::kActualDelayedWriteRate =
     rocksdb_prefix + actual_delayed_write_rate;
 const std::string DB::Properties::kIsWriteStopped =
     rocksdb_prefix + is_write_stopped;
+const std::string DB::Properties::kIsWriteStalled =
+    rocksdb_prefix + is_write_stalled;
 const std::string DB::Properties::kEstimateOldestKeyTime =
     rocksdb_prefix + estimate_oldest_key_time;
 const std::string DB::Properties::kBlockCacheCapacity =
@@ -378,11 +378,10 @@ const std::unordered_map<std::string, DBPropertyInfo>
          {false, &InternalStats::HandleSsTables, nullptr, nullptr, nullptr}},
         {DB::Properties::kAggregatedTableProperties,
          {false, &InternalStats::HandleAggregatedTableProperties, nullptr,
-          &InternalStats::HandleAggregatedTablePropertiesMap, nullptr}},
+          nullptr, nullptr}},
         {DB::Properties::kAggregatedTablePropertiesAtLevel,
          {false, &InternalStats::HandleAggregatedTablePropertiesAtLevel,
-          nullptr, &InternalStats::HandleAggregatedTablePropertiesAtLevelMap,
-          nullptr}},
+          nullptr, nullptr, nullptr}},
         {DB::Properties::kNumImmutableMemTable,
          {false, nullptr, &InternalStats::HandleNumImmutableMemTable, nullptr,
           nullptr}},
@@ -475,6 +474,9 @@ const std::unordered_map<std::string, DBPropertyInfo>
         {DB::Properties::kIsWriteStopped,
          {false, nullptr, &InternalStats::HandleIsWriteStopped, nullptr,
           nullptr}},
+        {DB::Properties::kIsWriteStalled,
+         {false, nullptr, &InternalStats::HandleIsWriteStalled, nullptr,
+          nullptr}},
         {DB::Properties::kEstimateOldestKeyTime,
          {false, nullptr, &InternalStats::HandleEstimateOldestKeyTime, nullptr,
           nullptr}},
@@ -511,12 +513,11 @@ bool InternalStats::GetStringProperty(const DBPropertyInfo& property_info,
 }
 
 bool InternalStats::GetMapProperty(const DBPropertyInfo& property_info,
-                                   const Slice& property,
+                                   const Slice& /*property*/,
                                    std::map<std::string, std::string>* value) {
   assert(value != nullptr);
   assert(property_info.handle_map != nullptr);
-  Slice arg = GetPropertyNameAndArg(property).second;
-  return (this->*(property_info.handle_map))(value, arg);
+  return (this->*(property_info.handle_map))(value);
 }
 
 bool InternalStats::GetIntProperty(const DBPropertyInfo& property_info,
@@ -592,7 +593,7 @@ bool InternalStats::HandleStats(std::string* value, Slice suffix) {
 }
 
 bool InternalStats::HandleCFMapStats(
-    std::map<std::string, std::string>* cf_stats, Slice /*suffix*/) {
+    std::map<std::string, std::string>* cf_stats) {
   DumpCFMapStats(cf_stats);
   return true;
 }
@@ -636,27 +637,7 @@ bool InternalStats::HandleAggregatedTableProperties(std::string* value,
   return true;
 }
 
-static std::map<std::string, std::string> MapUint64ValuesToString(
-    const std::map<std::string, uint64_t>& from) {
-  std::map<std::string, std::string> to;
-  for (const auto& e : from) {
-    to[e.first] = ToString(e.second);
-  }
-  return to;
-}
-
-bool InternalStats::HandleAggregatedTablePropertiesMap(
-    std::map<std::string, std::string>* values, Slice /*suffix*/) {
-  std::shared_ptr<const TableProperties> tp;
-  auto s = cfd_->current()->GetAggregatedTableProperties(&tp);
-  if (!s.ok()) {
-    return false;
-  }
-  *values = MapUint64ValuesToString(tp->GetAggregatablePropertiesAsMap());
-  return true;
-}
-
-bool InternalStats::HandleAggregatedTablePropertiesAtLevel(std::string* values,
+bool InternalStats::HandleAggregatedTablePropertiesAtLevel(std::string* value,
                                                            Slice suffix) {
   uint64_t level;
   bool ok = ConsumeDecimalNumber(&suffix, &level) && suffix.empty();
@@ -669,24 +650,7 @@ bool InternalStats::HandleAggregatedTablePropertiesAtLevel(std::string* values,
   if (!s.ok()) {
     return false;
   }
-  *values = tp->ToString();
-  return true;
-}
-
-bool InternalStats::HandleAggregatedTablePropertiesAtLevelMap(
-    std::map<std::string, std::string>* values, Slice suffix) {
-  uint64_t level;
-  bool ok = ConsumeDecimalNumber(&suffix, &level) && suffix.empty();
-  if (!ok || static_cast<int>(level) >= number_levels_) {
-    return false;
-  }
-  std::shared_ptr<const TableProperties> tp;
-  auto s = cfd_->current()->GetAggregatedTableProperties(
-      &tp, static_cast<int>(level));
-  if (!s.ok()) {
-    return false;
-  }
-  *values = MapUint64ValuesToString(tp->GetAggregatablePropertiesAsMap());
+  *value = tp->ToString();
   return true;
 }
 
@@ -705,6 +669,7 @@ bool InternalStats::HandleNumImmutableMemTableFlushed(uint64_t* value,
 
 bool InternalStats::HandleMemTableFlushPending(uint64_t* value, DBImpl* /*db*/,
                                                Version* /*version*/) {
+  // Return number of mem tables that are ready to flush (made immutable)
   *value = (cfd_->imm()->IsFlushPending() ? 1 : 0);
   return true;
 }
@@ -840,7 +805,7 @@ bool InternalStats::HandleCurrentSuperVersionNumber(uint64_t* value,
 
 bool InternalStats::HandleIsFileDeletionsEnabled(uint64_t* value, DBImpl* db,
                                                  Version* /*version*/) {
-  *value = db->IsFileDeletionsEnabled() ? 1 : 0;
+  *value = db->IsFileDeletionsEnabled();
   return true;
 }
 
@@ -915,6 +880,12 @@ bool InternalStats::HandleIsWriteStopped(uint64_t* value, DBImpl* db,
   return true;
 }
 
+bool InternalStats::HandleIsWriteStalled(uint64_t* value, DBImpl* db,
+                                         Version* /*version*/) {
+  *value = db->write_controller().NeedsDelay() ? 1 : 0;
+  return true;
+}
+
 bool InternalStats::HandleEstimateOldestKeyTime(uint64_t* value, DBImpl* /*db*/,
                                                 Version* /*version*/) {
   // TODO(yiwu): The property is currently available for fifo compaction
@@ -949,9 +920,19 @@ bool InternalStats::HandleBlockCacheStat(Cache** block_cache) {
   assert(block_cache != nullptr);
   auto* table_factory = cfd_->ioptions()->table_factory;
   assert(table_factory != nullptr);
-  *block_cache =
-      table_factory->GetOptions<Cache>(TableFactory::kBlockCacheOpts());
-  return *block_cache != nullptr;
+  if (BlockBasedTableFactory::kName != table_factory->Name()) {
+    return false;
+  }
+  auto* table_options =
+      reinterpret_cast<BlockBasedTableOptions*>(table_factory->GetOptions());
+  if (table_options == nullptr) {
+    return false;
+  }
+  *block_cache = table_options->block_cache.get();
+  if (table_options->no_block_cache || *block_cache == nullptr) {
+    return false;
+  }
+  return true;
 }
 
 bool InternalStats::HandleBlockCacheCapacity(uint64_t* value, DBImpl* /*db*/,
@@ -1428,26 +1409,21 @@ void InternalStats::DumpCFStatsNoFileHistogram(std::string* value) {
 }
 
 void InternalStats::DumpCFFileHistogram(std::string* value) {
-  assert(value);
-  assert(cfd_);
-
-  std::ostringstream oss;
-  oss << "\n** File Read Latency Histogram By Level [" << cfd_->GetName()
-      << "] **\n";
+  char buf[2000];
+  snprintf(buf, sizeof(buf),
+           "\n** File Read Latency Histogram By Level [%s] **\n",
+           cfd_->GetName().c_str());
+  value->append(buf);
 
   for (int level = 0; level < number_levels_; level++) {
     if (!file_read_latency_[level].Empty()) {
-      oss << "** Level " << level << " read latency histogram (micros):\n"
-          << file_read_latency_[level].ToString() << '\n';
+      char buf2[5000];
+      snprintf(buf2, sizeof(buf2),
+               "** Level %d read latency histogram (micros):\n%s\n", level,
+               file_read_latency_[level].ToString().c_str());
+      value->append(buf2);
     }
   }
-
-  if (!blob_file_read_latency_.Empty()) {
-    oss << "** Blob file read latency histogram (micros):\n"
-        << blob_file_read_latency_.ToString() << '\n';
-  }
-
-  value->append(oss.str());
 }
 
 #else
@@ -1458,4 +1434,4 @@ const DBPropertyInfo* GetPropertyInfo(const Slice& /*property*/) {
 
 #endif  // !ROCKSDB_LITE
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

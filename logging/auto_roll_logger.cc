@@ -10,7 +10,7 @@
 #include "logging/logging.h"
 #include "util/mutexlock.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 #ifndef ROCKSDB_LITE
 // -- AutoRollLogger
@@ -45,8 +45,8 @@ AutoRollLogger::AutoRollLogger(Env* env, const std::string& dbname,
     RollLogFile();
   }
   GetExistingFiles();
-  s = ResetLogger();
-  if (s.ok() && status_.ok()) {
+  ResetLogger();
+  if (status_.ok()) {
     status_ = TrimOldLogFiles();
   }
 }
@@ -59,8 +59,6 @@ Status AutoRollLogger::ResetLogger() {
   if (!status_.ok()) {
     return status_;
   }
-  assert(logger_);
-  logger_->SetInfoLogLevel(Logger::GetInfoLogLevel());
 
   if (logger_->GetLogFileSize() == Logger::kDoNotSupportGetLogFileSize) {
     status_ = Status::NotSupported(
@@ -86,10 +84,7 @@ void AutoRollLogger::RollLogFile() {
       dbname_, now, db_absolute_path_, db_log_dir_);
     now++;
   } while (env_->FileExists(old_fname).ok());
-  Status s = env_->RenameFile(log_fname_, old_fname);
-  if (!s.ok()) {
-    // What should we do on error?
-  }
+  env_->RenameFile(log_fname_, old_fname);
   old_log_files_.push(old_fname);
 }
 
@@ -176,7 +171,7 @@ void AutoRollLogger::Logv(const char* format, va_list ap) {
   if (!logger_) {
     return;
   }
-
+  
   std::shared_ptr<Logger> logger;
   {
     MutexLock l(&mutex_);
@@ -260,15 +255,11 @@ Status CreateLoggerFromOptions(const std::string& dbname,
 
   Env* env = options.env;
   std::string db_absolute_path;
-  Status s = env->GetAbsolutePath(dbname, &db_absolute_path);
-  if (!s.ok()) {
-    return s;
-  }
+  env->GetAbsolutePath(dbname, &db_absolute_path);
   std::string fname =
       InfoLogFileName(dbname, db_absolute_path, options.db_log_dir);
 
-  env->CreateDirIfMissing(dbname)
-      .PermitUncheckedError();  // In case it does not exist
+  env->CreateDirIfMissing(dbname);  // In case it does not exist
   // Currently we only support roll by time-to-roll and log size
 #ifndef ROCKSDB_LITE
   if (options.log_file_time_to_roll > 0 || options.max_log_file_size > 0) {
@@ -276,7 +267,7 @@ Status CreateLoggerFromOptions(const std::string& dbname,
         env, dbname, options.db_log_dir, options.max_log_file_size,
         options.log_file_time_to_roll, options.keep_log_file_num,
         options.info_log_level);
-    s = result->GetStatus();
+    Status s = result->GetStatus();
     if (!s.ok()) {
       delete result;
     } else {
@@ -288,13 +279,12 @@ Status CreateLoggerFromOptions(const std::string& dbname,
   // Open a log file in the same directory as the db
   env->RenameFile(fname,
                   OldInfoLogFileName(dbname, env->NowMicros(), db_absolute_path,
-                                     options.db_log_dir))
-      .PermitUncheckedError();
-  s = env->NewLogger(fname, logger);
+                                     options.db_log_dir));
+  auto s = env->NewLogger(fname, logger);
   if (logger->get() != nullptr) {
     (*logger)->SetInfoLogLevel(options.info_log_level);
   }
   return s;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

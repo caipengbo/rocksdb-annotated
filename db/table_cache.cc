@@ -13,9 +13,8 @@
 #include "db/range_tombstone_fragmenter.h"
 #include "db/snapshot_impl.h"
 #include "db/version_edit.h"
-#include "file/file_util.h"
 #include "file/filename.h"
-#include "file/random_access_file_reader.h"
+
 #include "monitoring/perf_context_imp.h"
 #include "rocksdb/statistics.h"
 #include "table/block_based/block_based_table_reader.h"
@@ -28,9 +27,10 @@
 #include "test_util/sync_point.h"
 #include "util/cast_util.h"
 #include "util/coding.h"
+#include "util/file_reader_writer.h"
 #include "util/stop_watch.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 
@@ -63,19 +63,15 @@ void AppendVarint64(IterKey* key, uint64_t v) {
 
 }  // namespace
 
-const int kLoadConcurency = 128;
-
 TableCache::TableCache(const ImmutableCFOptions& ioptions,
-                       const FileOptions& file_options, Cache* const cache,
-                       BlockCacheTracer* const block_cache_tracer,
-                       const std::shared_ptr<IOTracer>& io_tracer)
+                       const EnvOptions& env_options, Cache* const cache,
+                       BlockCacheTracer* const block_cache_tracer)
     : ioptions_(ioptions),
-      file_options_(file_options),
+      env_options_(env_options),
       cache_(cache),
       immortal_tables_(false),
       block_cache_tracer_(block_cache_tracer),
-      loader_mutex_(kLoadConcurency, GetSliceNPHash64),
-      io_tracer_(io_tracer) {
+      cache_id_(cache_id_alloc++) {
   if (ioptions_.row_cache) {
     // If the same cache is shared by multiple instances, we need to
     // disambiguate its entries.
@@ -86,6 +82,8 @@ TableCache::TableCache(const ImmutableCFOptions& ioptions,
 TableCache::~TableCache() {
 }
 
+std::atomic<uint64_t> TableCache::cache_id_alloc(0);
+
 TableReader* TableCache::GetTableReaderFromHandle(Cache::Handle* handle) {
   return reinterpret_cast<TableReader*>(cache_->Value(handle));
 }
@@ -93,52 +91,41 @@ TableReader* TableCache::GetTableReaderFromHandle(Cache::Handle* handle) {
 void TableCache::ReleaseHandle(Cache::Handle* handle) {
   cache_->Release(handle);
 }
-// 根据配置的不同的sst格式来调用不同的reader
+
 Status TableCache::GetTableReader(
-    const ReadOptions& ro, const FileOptions& file_options,
+    const EnvOptions& env_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
     bool sequential_mode, bool record_read_stats, HistogramImpl* file_read_hist,
     std::unique_ptr<TableReader>* table_reader,
     const SliceTransform* prefix_extractor, bool skip_filters, int level,
-    bool prefetch_index_and_filter_in_cache,
-    size_t max_file_size_for_l0_meta_pin) {
+    bool prefetch_index_and_filter_in_cache) {
   std::string fname =
       TableFileName(ioptions_.cf_paths, fd.GetNumber(), fd.GetPathId());
-  std::unique_ptr<FSRandomAccessFile> file;
-  FileOptions fopts = file_options;
-  Status s = PrepareIOFromReadOptions(ro, ioptions_.env, fopts.io_options);
-  if (s.ok()) {
-    s = ioptions_.fs->NewRandomAccessFile(fname, fopts, &file, nullptr);
-  }
-  RecordTick(ioptions_.statistics, NO_FILE_OPENS);
-  if (s.IsPathNotFound()) {
-    fname = Rocks2LevelTableFileName(fname);
-    s = PrepareIOFromReadOptions(ro, ioptions_.env, fopts.io_options);
-    if (s.ok()) {
-      s = ioptions_.fs->NewRandomAccessFile(fname, file_options, &file,
-                                            nullptr);
-    }
-    RecordTick(ioptions_.statistics, NO_FILE_OPENS);
-  }
+  std::unique_ptr<RandomAccessFile> file;
+  Status s = ioptions_.env->NewRandomAccessFile(fname, &file, env_options);
 
+  RecordTick(ioptions_.statistics, NO_FILE_OPENS);
   if (s.ok()) {
     if (!sequential_mode && ioptions_.advise_random_on_open) {
-      file->Hint(FSRandomAccessFile::kRandom);
+      file->Hint(RandomAccessFile::RANDOM);
     }
+
+    // Generate a unique ID for this file, consisting of <cache_id,file_number>.
+    std::string file_id;
+    PutVarint64(&file_id, cache_id_);
+    PutVarint64(&file_id, fd.GetNumber());
+    file->SetUniqueId(std::move(file_id));
+
     StopWatch sw(ioptions_.env, ioptions_.statistics, TABLE_OPEN_IO_MICROS);
     std::unique_ptr<RandomAccessFileReader> file_reader(
         new RandomAccessFileReader(
-            std::move(file), fname, ioptions_.env, io_tracer_,
+            std::move(file), fname, ioptions_.env,
             record_read_stats ? ioptions_.statistics : nullptr, SST_READ_MICROS,
             file_read_hist, ioptions_.rate_limiter, ioptions_.listeners));
-    // 根据 Option的配置（不同的sstable，创建不同的Table reader）
     s = ioptions_.table_factory->NewTableReader(
-        ro,
-        TableReaderOptions(ioptions_, prefix_extractor, file_options,
+        TableReaderOptions(ioptions_, prefix_extractor, env_options,
                            internal_comparator, skip_filters, immortal_tables_,
-                           false /* force_direct_prefetch */, level,
-                           fd.largest_seqno, block_cache_tracer_,
-                           max_file_size_for_l0_meta_pin),
+                           level, fd.largest_seqno, block_cache_tracer_),
         std::move(file_reader), fd.GetFileSize(), table_reader,
         prefetch_index_and_filter_in_cache);
     TEST_SYNC_POINT("TableCache::GetTableReader:0");
@@ -153,16 +140,16 @@ void TableCache::EraseHandle(const FileDescriptor& fd, Cache::Handle* handle) {
   cache_->Erase(key);
 }
 
-Status TableCache::FindTable(const ReadOptions& ro,
-                             const FileOptions& file_options,
+Status TableCache::FindTable(const EnvOptions& env_options,
                              const InternalKeyComparator& internal_comparator,
                              const FileDescriptor& fd, Cache::Handle** handle,
                              const SliceTransform* prefix_extractor,
                              const bool no_io, bool record_read_stats,
                              HistogramImpl* file_read_hist, bool skip_filters,
-                             int level, bool prefetch_index_and_filter_in_cache,
-                             size_t max_file_size_for_l0_meta_pin) {
+                             int level,
+                             bool prefetch_index_and_filter_in_cache) {
   PERF_TIMER_GUARD_WITH_ENV(find_table_nanos, ioptions_.env);
+  Status s;
   uint64_t number = fd.GetNumber();
   Slice key = GetSliceForFileNumber(&number);
   *handle = cache_->Lookup(key);
@@ -170,30 +157,20 @@ Status TableCache::FindTable(const ReadOptions& ro,
                            const_cast<bool*>(&no_io));
 
   if (*handle == nullptr) {
-    if (no_io) {
+    if (no_io) {  // Don't do IO and return a not-found status
       return Status::Incomplete("Table not found in table_cache, no_io is set");
     }
-    MutexLock load_lock(loader_mutex_.get(key));
-    // We check the cache again under loading mutex
-    *handle = cache_->Lookup(key);
-    if (*handle != nullptr) {
-      return Status::OK();
-    }
-
     std::unique_ptr<TableReader> table_reader;
-    // 获得 table_reader
-    Status s = GetTableReader(
-        ro, file_options, internal_comparator, fd, false /* sequential mode */,
-        record_read_stats, file_read_hist, &table_reader, prefix_extractor,
-        skip_filters, level, prefetch_index_and_filter_in_cache,
-        max_file_size_for_l0_meta_pin);
+    s = GetTableReader(env_options, internal_comparator, fd,
+                       false /* sequential mode */, record_read_stats,
+                       file_read_hist, &table_reader, prefix_extractor,
+                       skip_filters, level, prefetch_index_and_filter_in_cache);
     if (!s.ok()) {
       assert(table_reader == nullptr);
       RecordTick(ioptions_.statistics, NO_FILE_ERRORS);
       // We do not cache error results so that if the error is transient,
       // or somebody repairs the file, we recover automatically.
     } else {
-      // 更新 Cache
       s = cache_->Insert(key, table_reader.get(), 1, &DeleteEntry<TableReader>,
                          handle);
       if (s.ok()) {
@@ -201,20 +178,18 @@ Status TableCache::FindTable(const ReadOptions& ro,
         table_reader.release();
       }
     }
-    return s;
   }
-  return Status::OK();
+  return s;
 }
 
 InternalIterator* TableCache::NewIterator(
-    const ReadOptions& options, const FileOptions& file_options,
+    const ReadOptions& options, const EnvOptions& env_options,
     const InternalKeyComparator& icomparator, const FileMetaData& file_meta,
     RangeDelAggregator* range_del_agg, const SliceTransform* prefix_extractor,
     TableReader** table_reader_ptr, HistogramImpl* file_read_hist,
     TableReaderCaller caller, Arena* arena, bool skip_filters, int level,
-    size_t max_file_size_for_l0_meta_pin,
     const InternalKey* smallest_compaction_key,
-    const InternalKey* largest_compaction_key, bool allow_unprepared_value) {
+    const InternalKey* largest_compaction_key) {
   PERF_TIMER_GUARD(new_table_iterator_nanos);
 
   Status s;
@@ -227,12 +202,10 @@ InternalIterator* TableCache::NewIterator(
   auto& fd = file_meta.fd;
   table_reader = fd.table_reader;
   if (table_reader == nullptr) {
-    s = FindTable(
-        options, file_options, icomparator, fd, &handle, prefix_extractor,
-        options.read_tier == kBlockCacheTier /* no_io */,
-        !for_compaction /* record_read_stats */, file_read_hist, skip_filters,
-        level, true /* prefetch_index_and_filter_in_cache */,
-        max_file_size_for_l0_meta_pin);
+    s = FindTable(env_options, icomparator, fd, &handle, prefix_extractor,
+                  options.read_tier == kBlockCacheTier /* no_io */,
+                  !for_compaction /* record_read_stats */, file_read_hist,
+                  skip_filters, level);
     if (s.ok()) {
       table_reader = GetTableReaderFromHandle(handle);
     }
@@ -244,9 +217,8 @@ InternalIterator* TableCache::NewIterator(
       result = NewEmptyInternalIterator<Slice>(arena);
     } else {
       result = table_reader->NewIterator(options, prefix_extractor, arena,
-                                   skip_filters, caller,
-                                   file_options.compaction_readahead_size,
-                                   allow_unprepared_value);
+                                         skip_filters, caller,
+                                         env_options.compaction_readahead_size);
     }
     if (handle != nullptr) {
       result->RegisterCleanup(&UnrefEntry, cache_, handle);
@@ -293,109 +265,13 @@ InternalIterator* TableCache::NewIterator(
   return result;
 }
 
-Status TableCache::GetRangeTombstoneIterator(
-    const ReadOptions& options,
-    const InternalKeyComparator& internal_comparator,
-    const FileMetaData& file_meta,
-    std::unique_ptr<FragmentedRangeTombstoneIterator>* out_iter) {
-  const FileDescriptor& fd = file_meta.fd;
-  Status s;
-  TableReader* t = fd.table_reader;
-  Cache::Handle* handle = nullptr;
-  if (t == nullptr) {
-    s = FindTable(options, file_options_, internal_comparator, fd, &handle);
-    if (s.ok()) {
-      t = GetTableReaderFromHandle(handle);
-    }
-  }
-  if (s.ok()) {
-    out_iter->reset(t->NewRangeTombstoneIterator(options));
-    assert(out_iter);
-  }
-  return s;
-}
-
-#ifndef ROCKSDB_LITE
-void TableCache::CreateRowCacheKeyPrefix(const ReadOptions& options,
-                                         const FileDescriptor& fd,
-                                         const Slice& internal_key,
-                                         GetContext* get_context,
-                                         IterKey& row_cache_key) {
-  uint64_t fd_number = fd.GetNumber();
-  // We use the user key as cache key instead of the internal key,
-  // otherwise the whole cache would be invalidated every time the
-  // sequence key increases. However, to support caching snapshot
-  // reads, we append the sequence number (incremented by 1 to
-  // distinguish from 0) only in this case.
-  // If the snapshot is larger than the largest seqno in the file,
-  // all data should be exposed to the snapshot, so we treat it
-  // the same as there is no snapshot. The exception is that if
-  // a seq-checking callback is registered, some internal keys
-  // may still be filtered out.
-  uint64_t seq_no = 0;
-  // Maybe we can include the whole file ifsnapshot == fd.largest_seqno.
-  if (options.snapshot != nullptr &&
-      (get_context->has_callback() ||
-       static_cast_with_check<const SnapshotImpl>(options.snapshot)
-               ->GetSequenceNumber() <= fd.largest_seqno)) {
-    // We should consider to use options.snapshot->GetSequenceNumber()
-    // instead of GetInternalKeySeqno(k), which will make the code
-    // easier to understand.
-    seq_no = 1 + GetInternalKeySeqno(internal_key);
-  }
-
-  // Compute row cache key.
-  row_cache_key.TrimAppend(row_cache_key.Size(), row_cache_id_.data(),
-                           row_cache_id_.size());
-  AppendVarint64(&row_cache_key, fd_number);
-  AppendVarint64(&row_cache_key, seq_no);
-}
-
-bool TableCache::GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
-                                 size_t prefix_size, GetContext* get_context) {
-  bool found = false;
-
-  row_cache_key.TrimAppend(prefix_size, user_key.data(), user_key.size());
-  if (auto row_handle =
-          ioptions_.row_cache->Lookup(row_cache_key.GetUserKey())) {
-    // Cleanable routine to release the cache entry
-    Cleanable value_pinner;
-    auto release_cache_entry_func = [](void* cache_to_clean,
-                                       void* cache_handle) {
-      ((Cache*)cache_to_clean)->Release((Cache::Handle*)cache_handle);
-    };
-    auto found_row_cache_entry =
-        static_cast<const std::string*>(ioptions_.row_cache->Value(row_handle));
-    // If it comes here value is located on the cache.
-    // found_row_cache_entry points to the value on cache,
-    // and value_pinner has cleanup procedure for the cached entry.
-    // After replayGetContextLog() returns, get_context.pinnable_slice_
-    // will point to cache entry buffer (or a copy based on that) and
-    // cleanup routine under value_pinner will be delegated to
-    // get_context.pinnable_slice_. Cache entry is released when
-    // get_context.pinnable_slice_ is reset.
-    value_pinner.RegisterCleanup(release_cache_entry_func,
-                                 ioptions_.row_cache.get(), row_handle);
-    replayGetContextLog(*found_row_cache_entry, user_key, get_context,
-                        &value_pinner);
-    RecordTick(ioptions_.statistics, ROW_CACHE_HIT);
-    found = true;
-  } else {
-    RecordTick(ioptions_.statistics, ROW_CACHE_MISS);
-  }
-  return found;
-}
-#endif  // ROCKSDB_LITE
-
-// 1. row cache 中查找  未找到：2. table cache查找  3. 读取value，缓存到row cache
-// 这里row cache就是对当前的所需要查找的key在当前sst中对应的value进行cache
 Status TableCache::Get(const ReadOptions& options,
                        const InternalKeyComparator& internal_comparator,
                        const FileMetaData& file_meta, const Slice& k,
                        GetContext* get_context,
                        const SliceTransform* prefix_extractor,
                        HistogramImpl* file_read_hist, bool skip_filters,
-                       int level, size_t max_file_size_for_l0_meta_pin) {
+                       int level) {
   auto& fd = file_meta.fd;
   std::string* row_cache_entry = nullptr;
   bool done = false;
@@ -406,11 +282,66 @@ Status TableCache::Get(const ReadOptions& options,
   // Check row cache if enabled. Since row cache does not currently store
   // sequence numbers, we cannot use it if we need to fetch the sequence.
   if (ioptions_.row_cache && !get_context->NeedToReadSequence()) {
+    uint64_t fd_number = fd.GetNumber();
     auto user_key = ExtractUserKey(k);
-    CreateRowCacheKeyPrefix(options, fd, k, get_context, row_cache_key);
-    done = GetFromRowCache(user_key, row_cache_key, row_cache_key.Size(),
-                           get_context);
-    if (!done) {
+    // We use the user key as cache key instead of the internal key,
+    // otherwise the whole cache would be invalidated every time the
+    // sequence key increases. However, to support caching snapshot
+    // reads, we append the sequence number (incremented by 1 to
+    // distinguish from 0) only in this case.
+    // If the snapshot is larger than the largest seqno in the file,
+    // all data should be exposed to the snapshot, so we treat it
+    // the same as there is no snapshot. The exception is that if
+    // a seq-checking callback is registered, some internal keys
+    // may still be filtered out.
+    uint64_t seq_no = 0;
+    // Maybe we can include the whole file ifsnapshot == fd.largest_seqno.
+    if (options.snapshot != nullptr &&
+        (get_context->has_callback() ||
+         static_cast_with_check<const SnapshotImpl, const Snapshot>(
+             options.snapshot)
+                 ->GetSequenceNumber() <= fd.largest_seqno)) {
+      // We should consider to use options.snapshot->GetSequenceNumber()
+      // instead of GetInternalKeySeqno(k), which will make the code
+      // easier to understand.
+      seq_no = 1 + GetInternalKeySeqno(k);
+    }
+
+    // Compute row cache key.
+    row_cache_key.TrimAppend(row_cache_key.Size(), row_cache_id_.data(),
+                             row_cache_id_.size());
+    AppendVarint64(&row_cache_key, fd_number);
+    AppendVarint64(&row_cache_key, seq_no);
+    row_cache_key.TrimAppend(row_cache_key.Size(), user_key.data(),
+                             user_key.size());
+
+    if (auto row_handle =
+            ioptions_.row_cache->Lookup(row_cache_key.GetUserKey())) {
+      // Cleanable routine to release the cache entry
+      Cleanable value_pinner;
+      auto release_cache_entry_func = [](void* cache_to_clean,
+                                         void* cache_handle) {
+        ((Cache*)cache_to_clean)->Release((Cache::Handle*)cache_handle);
+      };
+      auto found_row_cache_entry = static_cast<const std::string*>(
+          ioptions_.row_cache->Value(row_handle));
+      // If it comes here value is located on the cache.
+      // found_row_cache_entry points to the value on cache,
+      // and value_pinner has cleanup procedure for the cached entry.
+      // After replayGetContextLog() returns, get_context.pinnable_slice_
+      // will point to cache entry buffer (or a copy based on that) and
+      // cleanup routine under value_pinner will be delegated to
+      // get_context.pinnable_slice_. Cache entry is released when
+      // get_context.pinnable_slice_ is reset.
+      value_pinner.RegisterCleanup(release_cache_entry_func,
+                                   ioptions_.row_cache.get(), row_handle);
+      replayGetContextLog(*found_row_cache_entry, user_key, get_context,
+                          &value_pinner);
+      RecordTick(ioptions_.statistics, ROW_CACHE_HIT);
+      done = true;
+    } else {
+      // Not found, setting up the replay log.
+      RecordTick(ioptions_.statistics, ROW_CACHE_MISS);
       row_cache_entry = &row_cache_entry_buffer;
     }
   }
@@ -418,18 +349,13 @@ Status TableCache::Get(const ReadOptions& options,
   Status s;
   TableReader* t = fd.table_reader;
   Cache::Handle* handle = nullptr;
-  if (!done) {
-    assert(s.ok());
+  if (!done && s.ok()) {
     if (t == nullptr) {
-      // 先从Cache中查找，找不到再从 sst 文件中查找（并缓存到Cache中）
-      s = FindTable(options, file_options_, internal_comparator, fd, &handle,
-                    prefix_extractor,
-                    options.read_tier == kBlockCacheTier /* no_io */,
-                    true /* record_read_stats */, file_read_hist, skip_filters,
-                    level, true /* prefetch_index_and_filter_in_cache */,
-                    max_file_size_for_l0_meta_pin);
+      s = FindTable(
+          env_options_, internal_comparator, fd, &handle, prefix_extractor,
+          options.read_tier == kBlockCacheTier /* no_io */,
+          true /* record_read_stats */, file_read_hist, skip_filters, level);
       if (s.ok()) {
-        // 读取出 table_reader
         t = GetTableReaderFromHandle(handle);
       }
     }
@@ -447,7 +373,6 @@ Status TableCache::Get(const ReadOptions& options,
     }
     if (s.ok()) {
       get_context->SetReplayLog(row_cache_entry);  // nullptr if no cache.
-      // 从 table_reader 中读取数据
       s = t->Get(options, k, get_context, prefix_extractor, skip_filters);
       get_context->SetReplayLog(nullptr);
     } else if (options.read_tier == kBlockCacheTier && s.IsIncomplete()) {
@@ -464,12 +389,8 @@ Status TableCache::Get(const ReadOptions& options,
     size_t charge =
         row_cache_key.Size() + row_cache_entry->size() + sizeof(std::string);
     void* row_ptr = new std::string(std::move(*row_cache_entry));
-    // 插入 Cache
-    // If row cache is full, it's OK to continue.
-    ioptions_.row_cache
-        ->Insert(row_cache_key.GetUserKey(), row_ptr, charge,
-                 &DeleteEntry<std::string>)
-        .PermitUncheckedError();
+    ioptions_.row_cache->Insert(row_cache_key.GetUserKey(), row_ptr, charge,
+                                &DeleteEntry<std::string>);
   }
 #endif  // ROCKSDB_LITE
 
@@ -480,6 +401,8 @@ Status TableCache::Get(const ReadOptions& options,
 }
 
 // Batched version of TableCache::MultiGet.
+// TODO: Add support for row cache. As of now, this ignores the row cache
+// and directly looks up in the table files
 Status TableCache::MultiGet(const ReadOptions& options,
                             const InternalKeyComparator& internal_comparator,
                             const FileMetaData& file_meta,
@@ -491,50 +414,12 @@ Status TableCache::MultiGet(const ReadOptions& options,
   Status s;
   TableReader* t = fd.table_reader;
   Cache::Handle* handle = nullptr;
-  MultiGetRange table_range(*mget_range, mget_range->begin(),
-                            mget_range->end());
-#ifndef ROCKSDB_LITE
-  autovector<std::string, MultiGetContext::MAX_BATCH_SIZE> row_cache_entries;
-  IterKey row_cache_key;
-  size_t row_cache_key_prefix_size = 0;
-  KeyContext& first_key = *table_range.begin();
-  bool lookup_row_cache =
-      ioptions_.row_cache && !first_key.get_context->NeedToReadSequence();
-
-  // Check row cache if enabled. Since row cache does not currently store
-  // sequence numbers, we cannot use it if we need to fetch the sequence.
-  if (lookup_row_cache) {
-    GetContext* first_context = first_key.get_context;
-    CreateRowCacheKeyPrefix(options, fd, first_key.ikey, first_context,
-                            row_cache_key);
-    row_cache_key_prefix_size = row_cache_key.Size();
-
-    for (auto miter = table_range.begin(); miter != table_range.end();
-         ++miter) {
-      const Slice& user_key = miter->ukey_with_ts;
-
-      GetContext* get_context = miter->get_context;
-
-      if (GetFromRowCache(user_key, row_cache_key, row_cache_key_prefix_size,
-                          get_context)) {
-        table_range.SkipKey(miter);
-      } else {
-        row_cache_entries.emplace_back();
-        get_context->SetReplayLog(&(row_cache_entries.back()));
-      }
-    }
-  }
-#endif  // ROCKSDB_LITE
-
-  // Check that table_range is not empty. Its possible all keys may have been
-  // found in the row cache and thus the range may now be empty
-  if (s.ok() && !table_range.empty()) {
+  if (s.ok()) {
     if (t == nullptr) {
       s = FindTable(
-          options, file_options_, internal_comparator, fd, &handle,
-          prefix_extractor, options.read_tier == kBlockCacheTier /* no_io */,
+          env_options_, internal_comparator, fd, &handle, prefix_extractor,
+          options.read_tier == kBlockCacheTier /* no_io */,
           true /* record_read_stats */, file_read_hist, skip_filters, level);
-      TEST_SYNC_POINT_CALLBACK("TableCache::MultiGet:FindTable", &s);
       if (s.ok()) {
         t = GetTableReaderFromHandle(handle);
         assert(t);
@@ -544,20 +429,21 @@ Status TableCache::MultiGet(const ReadOptions& options,
       std::unique_ptr<FragmentedRangeTombstoneIterator> range_del_iter(
           t->NewRangeTombstoneIterator(options));
       if (range_del_iter != nullptr) {
-        for (auto iter = table_range.begin(); iter != table_range.end();
+        for (auto iter = mget_range->begin(); iter != mget_range->end();
              ++iter) {
+          const Slice& k = iter->ikey;
           SequenceNumber* max_covering_tombstone_seq =
               iter->get_context->max_covering_tombstone_seq();
           *max_covering_tombstone_seq = std::max(
               *max_covering_tombstone_seq,
-              range_del_iter->MaxCoveringTombstoneSeqnum(iter->ukey_with_ts));
+              range_del_iter->MaxCoveringTombstoneSeqnum(ExtractUserKey(k)));
         }
       }
     }
     if (s.ok()) {
-      t->MultiGet(options, &table_range, prefix_extractor, skip_filters);
+      t->MultiGet(options, mget_range, prefix_extractor, skip_filters);
     } else if (options.read_tier == kBlockCacheTier && s.IsIncomplete()) {
-      for (auto iter = table_range.begin(); iter != table_range.end(); ++iter) {
+      for (auto iter = mget_range->begin(); iter != mget_range->end(); ++iter) {
         Status* status = iter->s;
         if (status->IsIncomplete()) {
           // Couldn't find Table in cache but treat as kFound if no_io set
@@ -568,36 +454,6 @@ Status TableCache::MultiGet(const ReadOptions& options,
     }
   }
 
-#ifndef ROCKSDB_LITE
-  if (lookup_row_cache) {
-    size_t row_idx = 0;
-
-    for (auto miter = table_range.begin(); miter != table_range.end();
-         ++miter) {
-      std::string& row_cache_entry = row_cache_entries[row_idx++];
-      const Slice& user_key = miter->ukey_with_ts;
-      ;
-      GetContext* get_context = miter->get_context;
-
-      get_context->SetReplayLog(nullptr);
-      // Compute row cache key.
-      row_cache_key.TrimAppend(row_cache_key_prefix_size, user_key.data(),
-                               user_key.size());
-      // Put the replay log in row cache only if something was found.
-      if (s.ok() && !row_cache_entry.empty()) {
-        size_t charge =
-            row_cache_key.Size() + row_cache_entry.size() + sizeof(std::string);
-        void* row_ptr = new std::string(std::move(row_cache_entry));
-        // If row cache is full, it's OK.
-        ioptions_.row_cache
-            ->Insert(row_cache_key.GetUserKey(), row_ptr, charge,
-                     &DeleteEntry<std::string>)
-            .PermitUncheckedError();
-      }
-    }
-  }
-#endif  // ROCKSDB_LITE
-
   if (handle != nullptr) {
     ReleaseHandle(handle);
   }
@@ -605,21 +461,22 @@ Status TableCache::MultiGet(const ReadOptions& options,
 }
 
 Status TableCache::GetTableProperties(
-    const FileOptions& file_options,
+    const EnvOptions& env_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
     std::shared_ptr<const TableProperties>* properties,
     const SliceTransform* prefix_extractor, bool no_io) {
+  Status s;
   auto table_reader = fd.table_reader;
   // table already been pre-loaded?
   if (table_reader) {
     *properties = table_reader->GetTableProperties();
 
-    return Status::OK();
+    return s;
   }
 
   Cache::Handle* table_handle = nullptr;
-  Status s = FindTable(ReadOptions(), file_options, internal_comparator, fd,
-                       &table_handle, prefix_extractor, no_io);
+  s = FindTable(env_options, internal_comparator, fd, &table_handle,
+                prefix_extractor, no_io);
   if (!s.ok()) {
     return s;
   }
@@ -631,9 +488,10 @@ Status TableCache::GetTableProperties(
 }
 
 size_t TableCache::GetMemoryUsageByTableReader(
-    const FileOptions& file_options,
+    const EnvOptions& env_options,
     const InternalKeyComparator& internal_comparator, const FileDescriptor& fd,
     const SliceTransform* prefix_extractor) {
+  Status s;
   auto table_reader = fd.table_reader;
   // table already been pre-loaded?
   if (table_reader) {
@@ -641,8 +499,8 @@ size_t TableCache::GetMemoryUsageByTableReader(
   }
 
   Cache::Handle* table_handle = nullptr;
-  Status s = FindTable(ReadOptions(), file_options, internal_comparator, fd,
-                       &table_handle, prefix_extractor, true);
+  s = FindTable(env_options, internal_comparator, fd, &table_handle,
+                prefix_extractor, true);
   if (!s.ok()) {
     return 0;
   }
@@ -666,8 +524,8 @@ uint64_t TableCache::ApproximateOffsetOf(
   Cache::Handle* table_handle = nullptr;
   if (table_reader == nullptr) {
     const bool for_compaction = (caller == TableReaderCaller::kCompaction);
-    Status s = FindTable(ReadOptions(), file_options_, internal_comparator, fd,
-                         &table_handle, prefix_extractor, false /* no_io */,
+    Status s = FindTable(env_options_, internal_comparator, fd, &table_handle,
+                         prefix_extractor, false /* no_io */,
                          !for_compaction /* record_read_stats */);
     if (s.ok()) {
       table_reader = GetTableReaderFromHandle(table_handle);
@@ -683,31 +541,4 @@ uint64_t TableCache::ApproximateOffsetOf(
 
   return result;
 }
-
-uint64_t TableCache::ApproximateSize(
-    const Slice& start, const Slice& end, const FileDescriptor& fd,
-    TableReaderCaller caller, const InternalKeyComparator& internal_comparator,
-    const SliceTransform* prefix_extractor) {
-  uint64_t result = 0;
-  TableReader* table_reader = fd.table_reader;
-  Cache::Handle* table_handle = nullptr;
-  if (table_reader == nullptr) {
-    const bool for_compaction = (caller == TableReaderCaller::kCompaction);
-    Status s = FindTable(ReadOptions(), file_options_, internal_comparator, fd,
-                         &table_handle, prefix_extractor, false /* no_io */,
-                         !for_compaction /* record_read_stats */);
-    if (s.ok()) {
-      table_reader = GetTableReaderFromHandle(table_handle);
-    }
-  }
-
-  if (table_reader != nullptr) {
-    result = table_reader->ApproximateSize(start, end, caller);
-  }
-  if (table_handle != nullptr) {
-    ReleaseHandle(table_handle);
-  }
-
-  return result;
-}
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

@@ -15,7 +15,7 @@
 #include <unistd.h>
 #endif
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 
@@ -27,7 +27,7 @@ enum BatchOperation { OP_PUT = 0, OP_DELETE = 1 };
 class SpecialTimeEnv : public EnvWrapper {
  public:
   explicit SpecialTimeEnv(Env* base) : EnvWrapper(base) {
-    EXPECT_OK(base->GetCurrentTime(&current_time_));
+    base->GetCurrentTime(&current_time_);
   }
 
   void Sleep(int64_t sleep_time) { current_time_ += sleep_time; }
@@ -87,15 +87,19 @@ class TtlTest : public testing::Test {
   }
 
   // Call db_ttl_->Close() before delete db_ttl_
-  void CloseTtl() { CloseTtlHelper(true); }
+  void CloseTtl() {
+    CloseTtlHelper(true);
+  }
 
   // No db_ttl_->Close() before delete db_ttl_
-  void CloseTtlNoDBClose() { CloseTtlHelper(false); }
+  void CloseTtlNoDBClose() {
+    CloseTtlHelper(false);
+  }
 
   void CloseTtlHelper(bool close_db) {
     if (db_ttl_ != nullptr) {
       if (close_db) {
-        EXPECT_OK(db_ttl_->Close());
+        db_ttl_->Close();
       }
       delete db_ttl_;
       db_ttl_ = nullptr;
@@ -137,17 +141,17 @@ class TtlTest : public testing::Test {
     for (int64_t i = 0; i < num_ops && kv_it_ != kvmap_.end(); i++, ++kv_it_) {
       switch (batch_ops[i]) {
         case OP_PUT:
-          ASSERT_OK(batch.Put(kv_it_->first, kv_it_->second));
+          batch.Put(kv_it_->first, kv_it_->second);
           break;
         case OP_DELETE:
-          ASSERT_OK(batch.Delete(kv_it_->first));
+          batch.Delete(kv_it_->first);
           break;
         default:
           FAIL();
       }
     }
-    ASSERT_OK(db_ttl_->Write(wopts, &batch));
-    ASSERT_OK(db_ttl_->Flush(flush_opts));
+    db_ttl_->Write(wopts, &batch);
+    db_ttl_->Flush(flush_opts);
   }
 
   // Puts num_entries starting from start_pos_map from kvmap_ into the database
@@ -170,19 +174,19 @@ class TtlTest : public testing::Test {
                             : db_ttl_->Put(wopts, cf, "keymock", "valuemock"));
     if (flush) {
       if (cf == nullptr) {
-        ASSERT_OK(db_ttl_->Flush(flush_opts));
+        db_ttl_->Flush(flush_opts);
       } else {
-        ASSERT_OK(db_ttl_->Flush(flush_opts, cf));
+        db_ttl_->Flush(flush_opts, cf);
       }
     }
   }
 
   // Runs a manual compaction
-  Status ManualCompact(ColumnFamilyHandle* cf = nullptr) {
+  void ManualCompact(ColumnFamilyHandle* cf = nullptr) {
     if (cf == nullptr) {
-      return db_ttl_->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+      db_ttl_->CompactRange(CompactRangeOptions(), nullptr, nullptr);
     } else {
-      return db_ttl_->CompactRange(CompactRangeOptions(), cf, nullptr, nullptr);
+      db_ttl_->CompactRange(CompactRangeOptions(), cf, nullptr, nullptr);
     }
   }
 
@@ -225,9 +229,18 @@ class TtlTest : public testing::Test {
     }
   }
 
-  void CompactCheck(int64_t st_pos, int64_t span, bool check = true,
-                    bool test_compaction_change = false,
-                    ColumnFamilyHandle* cf = nullptr) {
+  // Sleeps for slp_tim then runs a manual compaction
+  // Checks span starting from st_pos from kvmap_ in the db and
+  // Gets should return true if check is true and false otherwise
+  // Also checks that value that we got is the same as inserted; and =kNewValue
+  //   if test_compaction_change is true
+  void SleepCompactCheck(int slp_tim, int64_t st_pos, int64_t span,
+                         bool check = true, bool test_compaction_change = false,
+                         ColumnFamilyHandle* cf = nullptr) {
+    ASSERT_TRUE(db_ttl_);
+
+    env_->Sleep(slp_tim);
+    ManualCompact(cf);
     static ReadOptions ropts;
     kv_it_ = kvmap_.begin();
     advance(kv_it_, st_pos);
@@ -258,27 +271,13 @@ class TtlTest : public testing::Test {
       }
     }
   }
-  // Sleeps for slp_tim then runs a manual compaction
-  // Checks span starting from st_pos from kvmap_ in the db and
-  // Gets should return true if check is true and false otherwise
-  // Also checks that value that we got is the same as inserted; and =kNewValue
-  //   if test_compaction_change is true
-  void SleepCompactCheck(int slp_tim, int64_t st_pos, int64_t span,
-                         bool check = true, bool test_compaction_change = false,
-                         ColumnFamilyHandle* cf = nullptr) {
-    ASSERT_TRUE(db_ttl_);
-
-    env_->Sleep(slp_tim);
-    ASSERT_OK(ManualCompact(cf));
-    CompactCheck(st_pos, span, check, test_compaction_change, cf);
-  }
 
   // Similar as SleepCompactCheck but uses TtlIterator to read from db
   void SleepCompactCheckIter(int slp, int st_pos, int64_t span,
                              bool check = true) {
     ASSERT_TRUE(db_ttl_);
     env_->Sleep(slp);
-    ASSERT_OK(ManualCompact());
+    ManualCompact();
     static ReadOptions ropts;
     Iterator *dbiter = db_ttl_->NewIterator(ropts);
     kv_it_ = kvmap_.begin();
@@ -297,7 +296,6 @@ class TtlTest : public testing::Test {
         dbiter->Next();
       }
     }
-    ASSERT_OK(dbiter->status());
     delete dbiter;
   }
 
@@ -418,6 +416,7 @@ TEST_F(TtlTest, NoEffect) {
   CloseTtl();
 }
 
+
 // Rerun the NoEffect test with a different version of CloseTtl
 // function, where db is directly deleted without close.
 TEST_F(TtlTest, DestructWithoutClose) {
@@ -426,18 +425,18 @@ TEST_F(TtlTest, DestructWithoutClose) {
   int64_t boundary2 = 2 * boundary1;
 
   OpenTtl();
-  PutValues(0, boundary1);             // T=0: Set1 never deleted
-  SleepCompactCheck(1, 0, boundary1);  // T=1: Set1 still there
+  PutValues(0, boundary1);                       //T=0: Set1 never deleted
+  SleepCompactCheck(1, 0, boundary1);            //T=1: Set1 still there
   CloseTtlNoDBClose();
 
   OpenTtl(0);
-  PutValues(boundary1, boundary2 - boundary1);  // T=1: Set2 never deleted
-  SleepCompactCheck(1, 0, boundary2);           // T=2: Sets1 & 2 still there
+  PutValues(boundary1, boundary2 - boundary1);   //T=1: Set2 never deleted
+  SleepCompactCheck(1, 0, boundary2);            //T=2: Sets1 & 2 still there
   CloseTtlNoDBClose();
 
   OpenTtl(-1);
-  PutValues(boundary2, kSampleSize_ - boundary2);  // T=3: Set3 never deleted
-  SleepCompactCheck(1, 0, kSampleSize_, true);  // T=4: Sets 1,2,3 still there
+  PutValues(boundary2, kSampleSize_ - boundary2); //T=3: Set3 never deleted
+  SleepCompactCheck(1, 0, kSampleSize_, true);    //T=4: Sets 1,2,3 still there
   CloseTtlNoDBClose();
 }
 
@@ -540,16 +539,11 @@ TEST_F(TtlTest, ReadOnlyPresentForever) {
   MakeKVMap(kSampleSize_);
 
   OpenTtl(1);                                 // T=0:Open the db normally
-  PutValues(0, kSampleSize_);                 // T=0:Insert Set1. Delete at t=1
+  PutValues(0, kSampleSize_);                  // T=0:Insert Set1. Delete at t=1
   CloseTtl();
 
   OpenReadOnlyTtl(1);
-  ASSERT_TRUE(db_ttl_);
-
-  env_->Sleep(2);
-  Status s = ManualCompact();  // T=2:Set1 should still be there
-  ASSERT_TRUE(s.IsNotSupported());
-  CompactCheck(0, kSampleSize_);
+  SleepCompactCheck(2, 0, kSampleSize_);       // T=2:Set1 should still be there
   CloseTtl();
 }
 
@@ -679,12 +673,13 @@ TEST_F(TtlTest, ChangeTtlOnOpenDb) {
 
   OpenTtl(1);                                  // T=0:Open the db with ttl = 2
   SetTtl(3);
-  PutValues(0, kSampleSize_);                  // T=0:Insert Set1. Delete at t=2
+  // @lint-ignore TXT2 T25377293 Grandfathered in
+  PutValues(0, kSampleSize_);		       // T=0:Insert Set1. Delete at t=2
   SleepCompactCheck(2, 0, kSampleSize_, true); // T=2:Set1 should be there
   CloseTtl();
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+} //  namespace rocksdb
 
 // A black-box test for the ttl wrapper around rocksdb
 int main(int argc, char** argv) {

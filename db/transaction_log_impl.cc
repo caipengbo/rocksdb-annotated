@@ -8,16 +8,16 @@
 #include "db/transaction_log_impl.h"
 #include <cinttypes>
 #include "db/write_batch_internal.h"
-#include "file/sequence_file_reader.h"
+#include "util/file_reader_writer.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 TransactionLogIteratorImpl::TransactionLogIteratorImpl(
     const std::string& dir, const ImmutableDBOptions* options,
     const TransactionLogIterator::ReadOptions& read_options,
     const EnvOptions& soptions, const SequenceNumber seq,
     std::unique_ptr<VectorLogPtr> files, VersionSet const* const versions,
-    const bool seq_per_batch, const std::shared_ptr<IOTracer>& io_tracer)
+    const bool seq_per_batch)
     : dir_(dir),
       options_(options),
       read_options_(read_options),
@@ -30,11 +30,10 @@ TransactionLogIteratorImpl::TransactionLogIteratorImpl(
       current_batch_seq_(0),
       current_last_seq_(0),
       versions_(versions),
-      seq_per_batch_(seq_per_batch),
-      io_tracer_(io_tracer) {
+      seq_per_batch_(seq_per_batch) {
   assert(files_ != nullptr);
   assert(versions_ != nullptr);
-  current_status_.PermitUncheckedError();  // Clear on start
+
   reporter_.env = options_->env;
   reporter_.info_log = options_->info_log.get();
   SeekToStartSequence(); // Seek till starting sequence
@@ -43,28 +42,26 @@ TransactionLogIteratorImpl::TransactionLogIteratorImpl(
 Status TransactionLogIteratorImpl::OpenLogFile(
     const LogFile* log_file,
     std::unique_ptr<SequentialFileReader>* file_reader) {
-  FileSystemPtr fs(options_->fs, io_tracer_);
-  std::unique_ptr<FSSequentialFile> file;
+  Env* env = options_->env;
+  std::unique_ptr<SequentialFile> file;
   std::string fname;
   Status s;
-  EnvOptions optimized_env_options = fs->OptimizeForLogRead(soptions_);
+  EnvOptions optimized_env_options = env->OptimizeForLogRead(soptions_);
   if (log_file->Type() == kArchivedLogFile) {
     fname = ArchivedLogFileName(dir_, log_file->LogNumber());
-    s = fs->NewSequentialFile(fname, optimized_env_options, &file, nullptr);
+    s = env->NewSequentialFile(fname, &file, optimized_env_options);
   } else {
     fname = LogFileName(dir_, log_file->LogNumber());
-    s = fs->NewSequentialFile(fname, optimized_env_options, &file, nullptr);
+    s = env->NewSequentialFile(fname, &file, optimized_env_options);
     if (!s.ok()) {
       //  If cannot open file in DB directory.
       //  Try the archive dir, as it could have moved in the meanwhile.
       fname = ArchivedLogFileName(dir_, log_file->LogNumber());
-      s = fs->NewSequentialFile(fname, optimized_env_options,
-                                &file, nullptr);
+      s = env->NewSequentialFile(fname, &file, optimized_env_options);
     }
   }
   if (s.ok()) {
-    file_reader->reset(
-        new SequentialFileReader(std::move(file), fname, io_tracer_));
+    file_reader->reset(new SequentialFileReader(std::move(file), fname));
   }
   return s;
 }
@@ -81,16 +78,19 @@ Status TransactionLogIteratorImpl::status() { return current_status_; }
 
 bool TransactionLogIteratorImpl::Valid() { return started_ && is_valid_; }
 
-bool TransactionLogIteratorImpl::RestrictedRead(Slice* record) {
+bool TransactionLogIteratorImpl::RestrictedRead(
+    Slice* record,
+    std::string* scratch) {
   // Don't read if no more complete entries to read from logs
   if (current_last_seq_ >= versions_->LastSequence()) {
     return false;
   }
-  return current_log_reader_->ReadRecord(record, &scratch_);
+  return current_log_reader_->ReadRecord(record, scratch);
 }
 
 void TransactionLogIteratorImpl::SeekToStartSequence(uint64_t start_file_index,
                                                      bool strict) {
+  std::string scratch;
   Slice record;
   started_ = false;
   is_valid_ = false;
@@ -104,7 +104,7 @@ void TransactionLogIteratorImpl::SeekToStartSequence(uint64_t start_file_index,
     reporter_.Info(current_status_.ToString().c_str());
     return;
   }
-  while (RestrictedRead(&record)) {
+  while (RestrictedRead(&record, &scratch)) {
     if (record.size() < WriteBatchInternal::kHeader) {
       reporter_.Corruption(
         record.size(), Status::Corruption("very small log record"));
@@ -155,6 +155,7 @@ void TransactionLogIteratorImpl::Next() {
 }
 
 void TransactionLogIteratorImpl::NextImpl(bool internal) {
+  std::string scratch;
   Slice record;
   is_valid_ = false;
   if (!internal && !started_) {
@@ -166,7 +167,7 @@ void TransactionLogIteratorImpl::NextImpl(bool internal) {
     if (current_log_reader_->IsEOF()) {
       current_log_reader_->UnmarkEOF();
     }
-    while (RestrictedRead(&record)) {
+    while (RestrictedRead(&record, &scratch)) {
       if (record.size() < WriteBatchInternal::kHeader) {
         reporter_.Corruption(
           record.size(), Status::Corruption("very small log record"));
@@ -225,8 +226,7 @@ bool TransactionLogIteratorImpl::IsBatchExpected(
 
 void TransactionLogIteratorImpl::UpdateCurrentWriteBatch(const Slice& record) {
   std::unique_ptr<WriteBatch> batch(new WriteBatch());
-  Status s = WriteBatchInternal::SetContents(batch.get(), record);
-  s.PermitUncheckedError();  // TODO: What should we do with this error?
+  WriteBatchInternal::SetContents(batch.get(), record);
 
   SequenceNumber expected_seq = current_last_seq_ + 1;
   // If the iterator has started, then confirm that we get continuous batches
@@ -314,5 +314,5 @@ Status TransactionLogIteratorImpl::OpenLogReader(const LogFile* log_file) {
                       read_options_.verify_checksums_, log_file->LogNumber()));
   return Status::OK();
 }
-}  // namespace ROCKSDB_NAMESPACE
+}  //  namespace rocksdb
 #endif  // ROCKSDB_LITE

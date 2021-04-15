@@ -11,7 +11,7 @@
 #include "util/murmurhash.h"
 #include "rocksdb/options.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 const uint32_t kCuckooMurmurSeedMultiplier = 816922183;
 static inline uint64_t CuckooHash(
@@ -52,17 +52,14 @@ static inline uint64_t CuckooHash(
 // - Does not support prefix bloom filters.
 class CuckooTableFactory : public TableFactory {
  public:
-  explicit CuckooTableFactory(
-      const CuckooTableOptions& table_option = CuckooTableOptions());
+  explicit CuckooTableFactory(const CuckooTableOptions& table_options)
+    : table_options_(table_options) {}
   ~CuckooTableFactory() {}
 
-  // Method to allow CheckedCast to work for this class
-  static const char* kClassName() { return kCuckooTableName(); }
-  const char* Name() const override { return kCuckooTableName(); }
+  const char* Name() const override { return "CuckooTable"; }
 
-  using TableFactory::NewTableReader;
   Status NewTableReader(
-      const ReadOptions& ro, const TableReaderOptions& table_reader_options,
+      const TableReaderOptions& table_reader_options,
       std::unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
       std::unique_ptr<TableReader>* table,
       bool prefetch_index_and_filter_in_cache = true) const override;
@@ -71,11 +68,25 @@ class CuckooTableFactory : public TableFactory {
       const TableBuilderOptions& table_builder_options,
       uint32_t column_family_id, WritableFileWriter* file) const override;
 
-  std::string GetPrintableOptions() const override;
+  // Sanitizes the specified DB Options.
+  Status SanitizeOptions(
+      const DBOptions& /*db_opts*/,
+      const ColumnFamilyOptions& /*cf_opts*/) const override {
+    return Status::OK();
+  }
+
+  std::string GetPrintableTableOptions() const override;
+
+  void* GetOptions() override { return &table_options_; }
+
+  Status GetOptionString(std::string* /*opt_string*/,
+                         const std::string& /*delimiter*/) const override {
+    return Status::OK();
+  }
 
  private:
   CuckooTableOptions table_options_;
 };
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb
 #endif  // ROCKSDB_LITE

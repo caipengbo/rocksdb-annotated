@@ -16,7 +16,7 @@
 #include <cstddef>
 #include "rocksdb/cache.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 class WriteBufferManager {
  public:
@@ -26,10 +26,6 @@ class WriteBufferManager {
   // the memory allocated to the cache. It can be used even if _buffer_size = 0.
   explicit WriteBufferManager(size_t _buffer_size,
                               std::shared_ptr<Cache> cache = {});
-  // No copying allowed
-  WriteBufferManager(const WriteBufferManager&) = delete;
-  WriteBufferManager& operator=(const WriteBufferManager&) = delete;
-
   ~WriteBufferManager();
 
   bool enabled() const { return buffer_size_ != 0; }
@@ -42,9 +38,6 @@ class WriteBufferManager {
   }
   size_t mutable_memtable_memory_usage() const {
     return memory_active_.load(std::memory_order_relaxed);
-  }
-  size_t dummy_entries_in_cache_usage() const {
-    return dummy_size_.load(std::memory_order_relaxed);
   }
   size_t buffer_size() const { return buffer_size_; }
 
@@ -96,11 +89,14 @@ class WriteBufferManager {
   std::atomic<size_t> memory_used_;
   // Memory that hasn't been scheduled to free.
   std::atomic<size_t> memory_active_;
-  std::atomic<size_t> dummy_size_;
   struct CacheRep;
   std::unique_ptr<CacheRep> cache_rep_;
 
   void ReserveMemWithCache(size_t mem);
   void FreeMemWithCache(size_t mem);
+
+  // No copying allowed
+  WriteBufferManager(const WriteBufferManager&) = delete;
+  WriteBufferManager& operator=(const WriteBufferManager&) = delete;
 };
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace rocksdb

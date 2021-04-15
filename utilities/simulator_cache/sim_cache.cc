@@ -5,15 +5,14 @@
 
 #include "rocksdb/utilities/sim_cache.h"
 #include <atomic>
-#include "env/composite_env_wrapper.h"
-#include "file/writable_file_writer.h"
 #include "monitoring/statistics.h"
 #include "port/port.h"
 #include "rocksdb/env.h"
+#include "util/file_reader_writer.h"
 #include "util/mutexlock.h"
 #include "util/string_util.h"
 
-namespace ROCKSDB_NAMESPACE {
+namespace rocksdb {
 
 namespace {
 
@@ -26,7 +25,6 @@ class CacheActivityLogger {
     MutexLock l(&mutex_);
 
     StopLoggingInternal();
-    bg_status_.PermitUncheckedError();
   }
 
   Status StartLogging(const std::string& activity_log_file, Env* env,
@@ -48,9 +46,8 @@ class CacheActivityLogger {
     if (!status.ok()) {
       return status;
     }
-    file_writer_.reset(new WritableFileWriter(
-        NewLegacyWritableFileWrapper(std::move(log_file)), activity_log_file,
-        env_opts));
+    file_writer_.reset(new WritableFileWriter(std::move(log_file),
+                                              activity_log_file, env_opts));
 
     max_logging_size_ = max_logging_size;
     activity_logging_enabled_.store(true);
@@ -93,7 +90,8 @@ class CacheActivityLogger {
     log_line += key.ToString(true);
     log_line += " - ";
     AppendNumberTo(&log_line, size);
-    log_line += "\n";
+  // @lint-ignore TXT2 T25377293 Grandfathered in
+		log_line += "\n";
 
     // line format: "ADD - <KEY> - <KEY-SIZE>"
     MutexLock l(&mutex_);
@@ -178,11 +176,9 @@ class SimCacheImpl : public SimCache {
     // *Lambda function without capture can be assgined to a function pointer
     Handle* h = key_only_cache_->Lookup(key);
     if (h == nullptr) {
-      // TODO: Check for error here?
-      auto s = key_only_cache_->Insert(
-          key, nullptr, charge, [](const Slice& /*k*/, void* /*v*/) {}, nullptr,
-          priority);
-      s.PermitUncheckedError();
+      key_only_cache_->Insert(key, nullptr, charge,
+                              [](const Slice& /*k*/, void* /*v*/) {}, nullptr,
+                              priority);
     } else {
       key_only_cache_->Release(h);
     }
@@ -239,9 +235,7 @@ class SimCacheImpl : public SimCache {
     return cache_->GetUsage(handle);
   }
 
-  size_t GetCharge(Handle* handle) const override {
-    return cache_->GetCharge(handle);
-  }
+  size_t GetCharge(Handle* handle) const override { return cache_->GetCharge(handle); }
 
   size_t GetPinnedUsage() const override { return cache_->GetPinnedUsage(); }
 
@@ -337,11 +331,8 @@ class SimCacheImpl : public SimCache {
 // For instrumentation purpose, use NewSimCache instead
 std::shared_ptr<SimCache> NewSimCache(std::shared_ptr<Cache> cache,
                                       size_t sim_capacity, int num_shard_bits) {
-  LRUCacheOptions co;
-  co.capacity = sim_capacity;
-  co.num_shard_bits = num_shard_bits;
-  co.metadata_charge_policy = kDontChargeCacheMetadata;
-  return NewSimCache(NewLRUCache(co), cache, num_shard_bits);
+  return NewSimCache(NewLRUCache(sim_capacity, num_shard_bits), cache,
+                     num_shard_bits);
 }
 
 std::shared_ptr<SimCache> NewSimCache(std::shared_ptr<Cache> sim_cache,
@@ -353,4 +344,4 @@ std::shared_ptr<SimCache> NewSimCache(std::shared_ptr<Cache> sim_cache,
   return std::make_shared<SimCacheImpl>(sim_cache, cache);
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+}  // end namespace rocksdb
