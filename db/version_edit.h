@@ -52,16 +52,21 @@ enum Tag : uint32_t {
 
   kInAtomicGroup = 300,
 
+  kBlobFileAddition = 400,
+  kBlobFileGarbage,
+
   // Mask for an unidentified tag from the future which can be safely ignored.
   kTagSafeIgnoreMask = 1 << 13,
 
   // Forward compatible (aka ignorable) records
   kDbId,
-  kBlobFileAddition,
-  kBlobFileGarbage,
+  kBlobFileAddition_DEPRECATED,
+  kBlobFileGarbage_DEPRECATED,
   kWalAddition,
   kWalDeletion,
   kFullHistoryTsLow,
+  kWalAddition2,
+  kWalDeletion2,
 };
 
 enum NewFileCustomTag : uint32_t {
@@ -69,7 +74,7 @@ enum NewFileCustomTag : uint32_t {
   kNeedCompaction = 2,
   // Since Manifest is not entirely forward-compatible, we currently encode
   // kMinLogNumberToKeep as part of NewFile as a hack. This should be removed
-  // when manifest becomes forward-comptabile.
+  // when manifest becomes forward-compatible.
   kMinLogNumberToKeepHack = 3,
   kOldestBlobFileNumber = 4,
   kOldestAncesterTime = 5,
@@ -98,7 +103,6 @@ extern uint64_t PackFileNumberAndPathId(uint64_t number, uint64_t path_id);
 // file number and size, which can be used to create a new table reader for it.
 // The behavior is undefined when a copied of the structure is used when the
 // file is not in any live version any more.
-//
 struct FileDescriptor {
   // Table reader in table_reader_handle
   TableReader* table_reader;
@@ -191,7 +195,7 @@ struct FileMetaData {
 
   // The file could be the compaction output from other SST files, which could
   // in turn be outputs for compact older SST files. We track the memtable
-  // flush timestamp for the oldest SST file that eventaully contribute data
+  // flush timestamp for the oldest SST file that eventually contribute data
   // to this file. 0 means the information is not available.
   uint64_t oldest_ancester_time = kUnknownOldestAncesterTime;
 
@@ -427,6 +431,7 @@ class VersionEdit {
   }
 
   void SetBlobFileAdditions(BlobFileAdditions blob_file_additions) {
+    assert(blob_file_additions_.empty());
     blob_file_additions_ = std::move(blob_file_additions);
   }
 
@@ -450,6 +455,7 @@ class VersionEdit {
   }
 
   void SetBlobFileGarbages(BlobFileGarbages blob_file_garbages) {
+    assert(blob_file_garbages_.empty());
     blob_file_garbages_ = std::move(blob_file_garbages);
   }
 

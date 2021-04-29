@@ -5,11 +5,11 @@
 
 #pragma once
 
-#include <assert.h>
-#include <stdint.h>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <type_traits>
 #include <vector>
@@ -26,9 +26,6 @@
 
 namespace ROCKSDB_NAMESPACE {
 
-// WriteThread 是对于 leveldb并发写的一个封装+优化，
-// leveldb中这块的逻辑比较简短，所以都写在了DBImpl中，线程的等待 Con_Wait 在 DBImpl::Write中
-// 但是rocksdb这块的逻辑较复杂，涉及到很多优化和并发写，所以专门拿了出来，封装在 WriteThread 中
 class WriteThread {
  public:
   enum State : uint8_t {
@@ -78,7 +75,6 @@ class WriteThread {
   struct Writer;
 
   struct WriteGroup {
-    // Writer 链表
     Writer* leader = nullptr;
     Writer* last_writer = nullptr;
     SequenceNumber last_sequence;
@@ -123,6 +119,7 @@ class WriteThread {
     bool disable_wal;
     bool disable_memtable;
     size_t batch_cnt;  // if non-zero, number of sub-batches in the write batch
+    size_t protection_bytes_per_key;
     PreReleaseCallback* pre_release_callback;
     uint64_t log_used;  // log number that this batch was inserted into
     uint64_t log_ref;   // log number that memtable insert should reference
@@ -136,7 +133,6 @@ class WriteThread {
 
     std::aligned_storage<sizeof(std::mutex)>::type state_mutex_bytes;
     std::aligned_storage<sizeof(std::condition_variable)>::type state_cv_bytes;
-    // 以下两个指针将 Write串成双向链表
     Writer* link_older;  // read/write only before linking, or as leader
     Writer* link_newer;  // lazy, read/write only before linking, or as leader
 
@@ -147,6 +143,7 @@ class WriteThread {
           disable_wal(false),
           disable_memtable(false),
           batch_cnt(0),
+          protection_bytes_per_key(0),
           pre_release_callback(nullptr),
           log_used(0),
           log_ref(0),
@@ -168,6 +165,7 @@ class WriteThread {
           disable_wal(write_options.disableWAL),
           disable_memtable(_disable_memtable),
           batch_cnt(_batch_cnt),
+          protection_bytes_per_key(_batch->GetProtectionBytesPerKey()),
           pre_release_callback(_pre_release_callback),
           log_used(0),
           log_ref(_log_ref),
@@ -267,7 +265,7 @@ class WriteThread {
   // for correctness. All of the methods except JoinBatchGroup and
   // EnterUnbatched may be called either with or without the db mutex held.
   // Correctness is maintained by ensuring that only a single thread is
-  // a leader at a time. 在同一时间仅有一个线程是 Leader
+  // a leader at a time.
 
   // Registers w as ready to become part of a batch group, waits until the
   // caller should perform some work, and returns the current state of the

@@ -64,9 +64,6 @@ class BlockBasedTable : public TableReader {
 
   // All the below fields control iterator readahead
   static const size_t kInitAutoReadaheadSize = 8 * 1024;
-  // Found that 256 KB readahead size provides the best performance, based on
-  // experiments, for auto readahead. Experiment data is in PR #3282.
-  static const size_t kMaxAutoReadaheadSize;
   static const int kMinNumFileReadsToStartAutoReadahead = 2;
 
   // Attempt to open the table that is stored in bytes [0..file_size)
@@ -522,7 +519,8 @@ struct BlockBasedTable::Rep {
         global_seqno(kDisableGlobalSequenceNumber),
         file_size(_file_size),
         level(_level),
-        immortal_table(_immortal_table) {}
+        immortal_table(_immortal_table) {
+  }
   ~Rep() { status.PermitUncheckedError(); }
   const ImmutableCFOptions& ioptions;
   const EnvOptions& env_options;
@@ -626,19 +624,23 @@ struct BlockBasedTable::Rep {
   uint64_t sst_number_for_tracing() const {
     return file ? TableFileNameToNumber(file->file_name()) : UINT64_MAX;
   }
-  void CreateFilePrefetchBuffer(
-      size_t readahead_size, size_t max_readahead_size,
-      std::unique_ptr<FilePrefetchBuffer>* fpb) const {
-    fpb->reset(new FilePrefetchBuffer(file.get(), readahead_size,
-                                      max_readahead_size,
-                                      !ioptions.allow_mmap_reads /* enable */));
+  void CreateFilePrefetchBuffer(size_t readahead_size,
+                                size_t max_readahead_size,
+                                std::unique_ptr<FilePrefetchBuffer>* fpb,
+                                bool implicit_auto_readahead) const {
+    fpb->reset(new FilePrefetchBuffer(
+        file.get(), readahead_size, max_readahead_size,
+        !ioptions.allow_mmap_reads /* enable */, false /* track_min_offset*/,
+        implicit_auto_readahead));
   }
 
   void CreateFilePrefetchBufferIfNotExists(
       size_t readahead_size, size_t max_readahead_size,
-      std::unique_ptr<FilePrefetchBuffer>* fpb) const {
+      std::unique_ptr<FilePrefetchBuffer>* fpb,
+      bool implicit_auto_readahead) const {
     if (!(*fpb)) {
-      CreateFilePrefetchBuffer(readahead_size, max_readahead_size, fpb);
+      CreateFilePrefetchBuffer(readahead_size, max_readahead_size, fpb,
+                               implicit_auto_readahead);
     }
   }
 };
@@ -655,13 +657,21 @@ class WritableFileStringStreamAdapter : public std::stringbuf {
   explicit WritableFileStringStreamAdapter(WritableFile* writable_file)
       : file_(writable_file) {}
 
-  // This is to handle `std::endl`, `endl` is written by `os.put()` directly
-  // without going through `xsputn()`. As we explicitly disabled buffering,
-  // every write, not captured by xsputn, is an overflow.
+  // Override overflow() to handle `sputc()`. There are cases that will not go
+  // through `xsputn()` e.g. `std::endl` or an unsigned long long is written by
+  // `os.put()` directly and will call `sputc()` By internal implementation:
+  //    int_type __CLR_OR_THIS_CALL sputc(_Elem _Ch) {  // put a character
+  //        return 0 < _Pnavail() ? _Traits::to_int_type(*_Pninc() = _Ch) :
+  //        overflow(_Traits::to_int_type(_Ch));
+  //    }
+  // As we explicitly disabled buffering (_Pnavail() is always 0), every write,
+  // not captured by xsputn(), becomes an overflow here.
   int overflow(int ch = EOF) override {
-    if (ch == '\n') {
-      file_->Append("\n");
-      return ch;
+    if (ch != EOF) {
+      Status s = file_->Append(Slice((char*)&ch, 1));
+      if (s.ok()) {
+        return ch;
+      }
     }
     return EOF;
   }

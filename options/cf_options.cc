@@ -38,96 +38,94 @@ namespace ROCKSDB_NAMESPACE {
 // http://en.cppreference.com/w/cpp/concept/StandardLayoutType
 // https://gist.github.com/graphitemaster/494f21190bb2c63c5516
 #ifndef ROCKSDB_LITE
-static ColumnFamilyOptions dummy_cf_options;
+static ImmutableCFOptions dummy_cf_options;
 template <typename T1>
-int offset_of(T1 ColumnFamilyOptions::*member) {
-  return int(size_t(&(dummy_cf_options.*member)) - size_t(&dummy_cf_options));
-}
-template <typename T1>
-int offset_of(T1 AdvancedColumnFamilyOptions::*member) {
+int offset_of(T1 ImmutableCFOptions::*member) {
   return int(size_t(&(dummy_cf_options.*member)) - size_t(&dummy_cf_options));
 }
 
 static Status ParseCompressionOptions(const std::string& value,
                                       const std::string& name,
                                       CompressionOptions& compression_opts) {
-  size_t start = 0;
-  size_t end = value.find(':');
-  if (end == std::string::npos) {
+  const char kDelimiter = ':';
+  std::istringstream field_stream(value);
+  std::string field;
+
+  if (!std::getline(field_stream, field, kDelimiter)) {
     return Status::InvalidArgument("unable to parse the specified CF option " +
                                    name);
   }
-  compression_opts.window_bits = ParseInt(value.substr(start, end - start));
-  start = end + 1;
-  end = value.find(':', start);
-  if (end == std::string::npos) {
+  compression_opts.window_bits = ParseInt(field);
+
+  if (!std::getline(field_stream, field, kDelimiter)) {
     return Status::InvalidArgument("unable to parse the specified CF option " +
                                    name);
   }
-  compression_opts.level = ParseInt(value.substr(start, end - start));
-  start = end + 1;
-  if (start >= value.size()) {
+  compression_opts.level = ParseInt(field);
+
+  if (!std::getline(field_stream, field, kDelimiter)) {
     return Status::InvalidArgument("unable to parse the specified CF option " +
                                    name);
   }
-  end = value.find(':', start);
-  compression_opts.strategy =
-      ParseInt(value.substr(start, value.size() - start));
+  compression_opts.strategy = ParseInt(field);
+
   // max_dict_bytes is optional for backwards compatibility
-  if (end != std::string::npos) {
-    start = end + 1;
-    if (start >= value.size()) {
+  if (!field_stream.eof()) {
+    if (!std::getline(field_stream, field, kDelimiter)) {
       return Status::InvalidArgument(
           "unable to parse the specified CF option " + name);
     }
-    compression_opts.max_dict_bytes =
-        ParseInt(value.substr(start, value.size() - start));
-    end = value.find(':', start);
+    compression_opts.max_dict_bytes = ParseInt(field);
   }
+
   // zstd_max_train_bytes is optional for backwards compatibility
-  if (end != std::string::npos) {
-    start = end + 1;
-    if (start >= value.size()) {
+  if (!field_stream.eof()) {
+    if (!std::getline(field_stream, field, kDelimiter)) {
       return Status::InvalidArgument(
           "unable to parse the specified CF option " + name);
     }
-    compression_opts.zstd_max_train_bytes =
-        ParseInt(value.substr(start, value.size() - start));
-    end = value.find(':', start);
+    compression_opts.zstd_max_train_bytes = ParseInt(field);
   }
 
   // parallel_threads is optional for backwards compatibility
-  if (end != std::string::npos) {
-    start = end + 1;
-    if (start >= value.size()) {
+  if (!field_stream.eof()) {
+    if (!std::getline(field_stream, field, kDelimiter)) {
       return Status::InvalidArgument(
           "unable to parse the specified CF option " + name);
     }
     // Since parallel_threads comes before enabled but was added optionally
     // later, we need to check if this is the final token (meaning it is the
-    // enabled bit), or if there is another token (meaning this one is
-    // parallel_threads)
-    end = value.find(':', start);
-    if (end != std::string::npos) {
-      compression_opts.parallel_threads =
-          ParseInt(value.substr(start, value.size() - start));
+    // enabled bit), or if there are more tokens (meaning this one is
+    // parallel_threads).
+    if (!field_stream.eof()) {
+      compression_opts.parallel_threads = ParseInt(field);
     } else {
       // parallel_threads is not serialized with this format, but enabled is
-      compression_opts.parallel_threads = CompressionOptions().parallel_threads;
-      compression_opts.enabled =
-          ParseBoolean("", value.substr(start, value.size() - start));
+      compression_opts.enabled = ParseBoolean("", field);
     }
   }
 
   // enabled is optional for backwards compatibility
-  if (end != std::string::npos) {
-    start = end + 1;
-    if (start >= value.size()) {
+  if (!field_stream.eof()) {
+    if (!std::getline(field_stream, field, kDelimiter)) {
       return Status::InvalidArgument(
           "unable to parse the specified CF option " + name);
     }
-    compression_opts.enabled =
-        ParseBoolean("", value.substr(start, value.size() - start));
+    compression_opts.enabled = ParseBoolean("", field);
+  }
+
+  // max_dict_buffer_bytes is optional for backwards compatibility
+  if (!field_stream.eof()) {
+    if (!std::getline(field_stream, field, kDelimiter)) {
+      return Status::InvalidArgument(
+          "unable to parse the specified CF option " + name);
+    }
+    compression_opts.max_dict_buffer_bytes = ParseUint64(field);
+  }
+
+  if (!field_stream.eof()) {
+    return Status::InvalidArgument("unable to parse the specified CF option " +
+                                   name);
   }
   return Status::OK();
 }
@@ -161,6 +159,10 @@ static std::unordered_map<std::string, OptionTypeInfo>
         {"enabled",
          {offsetof(struct CompressionOptions, enabled), OptionType::kBoolean,
           OptionVerificationType::kNormal, OptionTypeFlags::kMutable}},
+        {"max_dict_buffer_bytes",
+         {offsetof(struct CompressionOptions, max_dict_buffer_bytes),
+          OptionType::kUInt64T, OptionVerificationType::kNormal,
+          OptionTypeFlags::kMutable}},
 };
 
 static std::unordered_map<std::string, OptionTypeInfo>
@@ -486,57 +488,58 @@ static std::unordered_map<std::string, OptionTypeInfo>
          {0, OptionType::kBoolean, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"inplace_update_support",
-         {offset_of(&ColumnFamilyOptions::inplace_update_support),
+         {offset_of(&ImmutableCFOptions::inplace_update_support),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"level_compaction_dynamic_level_bytes",
-         {offset_of(&ColumnFamilyOptions::level_compaction_dynamic_level_bytes),
+         {offset_of(&ImmutableCFOptions::level_compaction_dynamic_level_bytes),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"optimize_filters_for_hits",
-         {offset_of(&ColumnFamilyOptions::optimize_filters_for_hits),
+         {offset_of(&ImmutableCFOptions::optimize_filters_for_hits),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"force_consistency_checks",
-         {offset_of(&ColumnFamilyOptions::force_consistency_checks),
+         {offset_of(&ImmutableCFOptions::force_consistency_checks),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"purge_redundant_kvs_while_flush",
-         {offset_of(&ColumnFamilyOptions::purge_redundant_kvs_while_flush),
+         {offset_of(&ImmutableCFOptions::purge_redundant_kvs_while_flush),
           OptionType::kBoolean, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"max_mem_compaction_level",
          {0, OptionType::kInt, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"max_write_buffer_number_to_maintain",
-         {offset_of(&ColumnFamilyOptions::max_write_buffer_number_to_maintain),
+         {offset_of(&ImmutableCFOptions::max_write_buffer_number_to_maintain),
           OptionType::kInt, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone, 0}},
         {"max_write_buffer_size_to_maintain",
-         {offset_of(&ColumnFamilyOptions::max_write_buffer_size_to_maintain),
+         {offset_of(&ImmutableCFOptions::max_write_buffer_size_to_maintain),
           OptionType::kInt64T, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"min_write_buffer_number_to_merge",
-         {offset_of(&ColumnFamilyOptions::min_write_buffer_number_to_merge),
+         {offset_of(&ImmutableCFOptions::min_write_buffer_number_to_merge),
           OptionType::kInt, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone, 0}},
         {"num_levels",
-         {offset_of(&ColumnFamilyOptions::num_levels), OptionType::kInt,
+         {offset_of(&ImmutableCFOptions::num_levels), OptionType::kInt,
           OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
         {"bloom_locality",
-         {offset_of(&ColumnFamilyOptions::bloom_locality), OptionType::kUInt32T,
+         {offset_of(&ImmutableCFOptions::bloom_locality), OptionType::kUInt32T,
           OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
         {"rate_limit_delay_max_milliseconds",
          {0, OptionType::kUInt, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"compression_per_level",
          OptionTypeInfo::Vector<CompressionType>(
-             offset_of(&ColumnFamilyOptions::compression_per_level),
+             offset_of(&ImmutableCFOptions::compression_per_level),
              OptionVerificationType::kNormal, OptionTypeFlags::kNone,
              {0, OptionType::kCompressionType})},
         {"comparator",
-         {offset_of(&ColumnFamilyOptions::comparator), OptionType::kComparator,
-          OptionVerificationType::kByName, OptionTypeFlags::kCompareLoose,
+         {offset_of(&ImmutableCFOptions::user_comparator),
+          OptionType::kComparator, OptionVerificationType::kByName,
+          OptionTypeFlags::kCompareLoose,
           // Parses the string and sets the corresponding comparator
           [](const ConfigOptions& /*opts*/, const std::string& /*name*/,
              const std::string& value, char* addr) {
@@ -552,15 +555,15 @@ static std::unordered_map<std::string, OptionTypeInfo>
           }}},
         {"memtable_insert_with_hint_prefix_extractor",
          {offset_of(
-              &ColumnFamilyOptions::memtable_insert_with_hint_prefix_extractor),
+              &ImmutableCFOptions::memtable_insert_with_hint_prefix_extractor),
           OptionType::kSliceTransform, OptionVerificationType::kByNameAllowNull,
           OptionTypeFlags::kNone}},
         {"memtable_factory",
-         {offset_of(&ColumnFamilyOptions::memtable_factory),
+         {offset_of(&ImmutableCFOptions::memtable_factory),
           OptionType::kMemTableRepFactory, OptionVerificationType::kByName,
           OptionTypeFlags::kNone}},
         {"memtable",
-         {offset_of(&ColumnFamilyOptions::memtable_factory),
+         {offset_of(&ImmutableCFOptions::memtable_factory),
           OptionType::kMemTableRepFactory, OptionVerificationType::kAlias,
           OptionTypeFlags::kNone,
           // Parses the value string and updates the memtable_factory
@@ -576,13 +579,13 @@ static std::unordered_map<std::string, OptionTypeInfo>
             return s;
           }}},
         {"table_factory", OptionTypeInfo::AsCustomSharedPtr<TableFactory>(
-                              offset_of(&ColumnFamilyOptions::table_factory),
+                              offset_of(&ImmutableCFOptions::table_factory),
                               OptionVerificationType::kByName,
                               (OptionTypeFlags::kCompareLoose |
                                OptionTypeFlags::kStringNameOnly |
                                OptionTypeFlags::kDontPrepare))},
         {"block_based_table_factory",
-         {offset_of(&ColumnFamilyOptions::table_factory),
+         {offset_of(&ImmutableCFOptions::table_factory),
           OptionType::kCustomizable, OptionVerificationType::kAlias,
           OptionTypeFlags::kShared | OptionTypeFlags::kCompareLoose,
           // Parses the input value and creates a BlockBasedTableFactory
@@ -614,7 +617,7 @@ static std::unordered_map<std::string, OptionTypeInfo>
             }
           }}},
         {"plain_table_factory",
-         {offset_of(&ColumnFamilyOptions::table_factory),
+         {offset_of(&ImmutableCFOptions::table_factory),
           OptionType::kCustomizable, OptionVerificationType::kAlias,
           OptionTypeFlags::kShared | OptionTypeFlags::kCompareLoose,
           // Parses the input value and creates a PlainTableFactory
@@ -645,15 +648,15 @@ static std::unordered_map<std::string, OptionTypeInfo>
             }
           }}},
         {"compaction_filter",
-         {offset_of(&ColumnFamilyOptions::compaction_filter),
+         {offset_of(&ImmutableCFOptions::compaction_filter),
           OptionType::kCompactionFilter, OptionVerificationType::kByName,
           OptionTypeFlags::kNone}},
         {"compaction_filter_factory",
-         {offset_of(&ColumnFamilyOptions::compaction_filter_factory),
+         {offset_of(&ImmutableCFOptions::compaction_filter_factory),
           OptionType::kCompactionFilterFactory, OptionVerificationType::kByName,
           OptionTypeFlags::kNone}},
         {"merge_operator",
-         {offset_of(&ColumnFamilyOptions::merge_operator),
+         {offset_of(&ImmutableCFOptions::merge_operator),
           OptionType::kMergeOperator,
           OptionVerificationType::kByNameAllowFromNull,
           OptionTypeFlags::kCompareLoose,
@@ -671,11 +674,11 @@ static std::unordered_map<std::string, OptionTypeInfo>
             return Status::OK();
           }}},
         {"compaction_style",
-         {offset_of(&ColumnFamilyOptions::compaction_style),
+         {offset_of(&ImmutableCFOptions::compaction_style),
           OptionType::kCompactionStyle, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"compaction_pri",
-         {offset_of(&ColumnFamilyOptions::compaction_pri),
+         {offset_of(&ImmutableCFOptions::compaction_pri),
           OptionType::kCompactionPri, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
 };
@@ -684,10 +687,9 @@ const std::string OptionsHelper::kCFOptionsName = "ColumnFamilyOptions";
 
 class ConfigurableMutableCFOptions : public Configurable {
  public:
-  ConfigurableMutableCFOptions(const MutableCFOptions& mcf) {
+  explicit ConfigurableMutableCFOptions(const MutableCFOptions& mcf) {
     mutable_ = mcf;
-    ConfigurableHelper::RegisterOptions(*this, &mutable_,
-                                        &cf_mutable_options_type_info);
+    RegisterOptions(&mutable_, &cf_mutable_options_type_info);
   }
 
  protected:
@@ -699,12 +701,10 @@ class ConfigurableCFOptions : public ConfigurableMutableCFOptions {
   ConfigurableCFOptions(const ColumnFamilyOptions& opts,
                         const std::unordered_map<std::string, std::string>* map)
       : ConfigurableMutableCFOptions(MutableCFOptions(opts)),
-        immutable_(opts),
+        immutable_(ImmutableDBOptions(), opts),
         cf_options_(opts),
         opt_map_(map) {
-    ConfigurableHelper::RegisterOptions(*this, OptionsHelper::kCFOptionsName,
-                                        &immutable_,
-                                        &cf_immutable_options_type_info);
+    RegisterOptions(&immutable_, &cf_immutable_options_type_info);
   }
 
  protected:
@@ -712,8 +712,7 @@ class ConfigurableCFOptions : public ConfigurableMutableCFOptions {
       const ConfigOptions& config_options,
       const std::unordered_map<std::string, std::string>& opts_map,
       std::unordered_map<std::string, std::string>* unused) override {
-    Status s = ConfigurableHelper::ConfigureOptions(config_options, *this,
-                                                    opts_map, unused);
+    Status s = Configurable::ConfigureOptions(config_options, opts_map, unused);
     if (s.ok()) {
       cf_options_ = BuildColumnFamilyOptions(immutable_, mutable_);
       s = PrepareOptions(config_options);
@@ -769,7 +768,7 @@ class ConfigurableCFOptions : public ConfigurableMutableCFOptions {
   }
 
  private:
-  ColumnFamilyOptions immutable_;
+  ImmutableCFOptions immutable_;
   ColumnFamilyOptions cf_options_;
   const std::unordered_map<std::string, std::string>* opt_map_;
 };
@@ -787,6 +786,8 @@ std::unique_ptr<Configurable> CFOptionsAsConfigurable(
 }
 #endif  // ROCKSDB_LITE
 
+ImmutableCFOptions::ImmutableCFOptions() : ImmutableCFOptions(Options()) {}
+
 ImmutableCFOptions::ImmutableCFOptions(const Options& options)
     : ImmutableCFOptions(ImmutableDBOptions(options), options) {}
 
@@ -796,9 +797,9 @@ ImmutableCFOptions::ImmutableCFOptions(const ImmutableDBOptions& db_options,
       compaction_pri(cf_options.compaction_pri),
       user_comparator(cf_options.comparator),
       internal_comparator(InternalKeyComparator(cf_options.comparator)),
-      merge_operator(cf_options.merge_operator.get()),
+      merge_operator(cf_options.merge_operator),
       compaction_filter(cf_options.compaction_filter),
-      compaction_filter_factory(cf_options.compaction_filter_factory.get()),
+      compaction_filter_factory(cf_options.compaction_filter_factory),
       min_write_buffer_number_to_merge(
           cf_options.min_write_buffer_number_to_merge),
       max_write_buffer_number_to_maintain(
@@ -807,17 +808,18 @@ ImmutableCFOptions::ImmutableCFOptions(const ImmutableDBOptions& db_options,
           cf_options.max_write_buffer_size_to_maintain),
       inplace_update_support(cf_options.inplace_update_support),
       inplace_callback(cf_options.inplace_callback),
-      info_log(db_options.info_log.get()),
-      statistics(db_options.statistics.get()),
-      rate_limiter(db_options.rate_limiter.get()),
+      logger(db_options.logger),
+      stats(db_options.stats),
+      rate_limiter(db_options.rate_limiter),
       info_log_level(db_options.info_log_level),
       env(db_options.env),
       fs(db_options.fs.get()),
+      clock(db_options.clock),
       allow_mmap_reads(db_options.allow_mmap_reads),
       allow_mmap_writes(db_options.allow_mmap_writes),
       db_paths(db_options.db_paths),
-      memtable_factory(cf_options.memtable_factory.get()),
-      table_factory(cf_options.table_factory.get()),
+      memtable_factory(cf_options.memtable_factory),
+      table_factory(cf_options.table_factory),
       table_properties_collector_factories(
           cf_options.table_properties_collector_factories),
       advise_random_on_open(db_options.advise_random_on_open),
@@ -840,13 +842,14 @@ ImmutableCFOptions::ImmutableCFOptions(const ImmutableDBOptions& db_options,
       listeners(db_options.listeners),
       row_cache(db_options.row_cache),
       memtable_insert_with_hint_prefix_extractor(
-          cf_options.memtable_insert_with_hint_prefix_extractor.get()),
+          cf_options.memtable_insert_with_hint_prefix_extractor),
       cf_paths(cf_options.cf_paths),
       compaction_thread_limiter(cf_options.compaction_thread_limiter),
-      file_checksum_gen_factory(db_options.file_checksum_gen_factory.get()),
+      file_checksum_gen_factory(db_options.file_checksum_gen_factory),
       sst_partitioner_factory(cf_options.sst_partitioner_factory),
       allow_data_in_errors(db_options.allow_data_in_errors),
-      db_host_id(db_options.db_host_id) {}
+      db_host_id(db_options.db_host_id),
+      checksum_handoff_file_types(db_options.checksum_handoff_file_types) {}
 
 // Multiple two operands. If they overflow, return op1.
 uint64_t MultiplyCheckOverflow(uint64_t op1, double op2) {
