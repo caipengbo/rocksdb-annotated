@@ -41,7 +41,7 @@
 #include <memory>
 #include <stdexcept>
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Arena;
 class Allocator;
@@ -59,10 +59,10 @@ class MemTableRep {
   // concatenated with values.
   class KeyComparator {
    public:
-    typedef rocksdb::Slice DecodedType;
+    typedef ROCKSDB_NAMESPACE::Slice DecodedType;
 
     virtual DecodedType decode_key(const char* key) const {
-      // The format of key is frozen and can be terated as a part of the API
+      // The format of key is frozen and can be treated as a part of the API
       // contract. Refer to MemTable::Add for details.
       return GetLengthPrefixedSlice(key);
     }
@@ -117,6 +117,28 @@ class MemTableRep {
   // the <key, seq> already exists.
   virtual bool InsertKeyWithHint(KeyHandle handle, void** hint) {
     InsertWithHint(handle, hint);
+    return true;
+  }
+
+  // Same as ::InsertWithHint, but allow concurrent write
+  //
+  // If hint points to nullptr, a new hint will be allocated on heap, otherwise
+  // the hint will be updated to reflect the last insert location. The hint is
+  // owned by the caller and it is the caller's responsibility to delete the
+  // hint later.
+  //
+  // Currently only skip-list based memtable implement the interface. Other
+  // implementations will fallback to InsertConcurrently() by default.
+  virtual void InsertWithHintConcurrently(KeyHandle handle, void** /*hint*/) {
+    // Ignore the hint by default.
+    InsertConcurrently(handle);
+  }
+
+  // Same as ::InsertWithHintConcurrently
+  // Returns false if MemTableRepFactory::CanHandleDuplicatedKey() is true and
+  // the <key, seq> already exists.
+  virtual bool InsertKeyWithHintConcurrently(KeyHandle handle, void** hint) {
+    InsertWithHintConcurrently(handle, hint);
     return true;
   }
 
@@ -300,26 +322,7 @@ class SkipListFactory : public MemTableRepFactory {
 
   bool CanHandleDuplicatedKey() const override { return true; }
 
-private:
-  const size_t lookahead_;
-};
-
-// This uses a doubly skip list to store keys, which is similar to skip list, but optimize for prev seek.
-class DoublySkipListFactory : public MemTableRepFactory {
- public:
-  explicit DoublySkipListFactory(size_t lookahead = 0) : lookahead_(lookahead) {}
-
-  using MemTableRepFactory::CreateMemTableRep;
-  virtual MemTableRep* CreateMemTableRep(const MemTableRep::KeyComparator&,
-                                 Allocator*, const SliceTransform*,
-                                 Logger* logger) override;
-  const char* Name() const override { return "DoublySkipListFactory"; }
-
-  bool IsInsertConcurrentlySupported() const override { return true; }
-
-  bool CanHandleDuplicatedKey() const override { return true; }
-
-private:
+ private:
   const size_t lookahead_;
 };
 
@@ -379,4 +382,4 @@ extern MemTableRepFactory* NewHashLinkListRepFactory(
     uint32_t threshold_use_skiplist = 256);
 
 #endif  // ROCKSDB_LITE
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

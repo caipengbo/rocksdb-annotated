@@ -10,9 +10,11 @@
 
 #include "rocksdb/options.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
+class SystemClock;
 
 struct ImmutableDBOptions {
+  static const char* kName() { return "ImmutableDBOptions"; }
   ImmutableDBOptions();
   explicit ImmutableDBOptions(const DBOptions& options);
 
@@ -22,6 +24,7 @@ struct ImmutableDBOptions {
   bool create_missing_column_families;
   bool error_if_exists;
   bool paranoid_checks;
+  bool track_and_verify_wals_in_manifest;
   Env* env;
   std::shared_ptr<RateLimiter> rate_limiter;
   std::shared_ptr<SstFileManager> sst_file_manager;
@@ -33,15 +36,15 @@ struct ImmutableDBOptions {
   std::vector<DbPath> db_paths;
   std::string db_log_dir;
   std::string wal_dir;
-  uint32_t max_subcompactions;
   size_t max_log_file_size;
   size_t log_file_time_to_roll;
   size_t keep_log_file_num;
   size_t recycle_log_file_num;
   uint64_t max_manifest_file_size;
   int table_cache_numshardbits;
-  uint64_t wal_ttl_seconds;
-  uint64_t wal_size_limit_mb;
+  uint64_t WAL_ttl_seconds;
+  uint64_t WAL_size_limit_MB;
+  uint64_t max_write_batch_group_size_bytes;
   size_t manifest_preallocation_size;
   bool allow_mmap_reads;
   bool allow_mmap_writes;
@@ -60,12 +63,12 @@ struct ImmutableDBOptions {
   bool enable_thread_tracking;
   bool enable_pipelined_write;
   bool unordered_write;
-  bool enable_multi_thread_write;
   bool allow_concurrent_memtable_write;
   bool enable_write_thread_adaptive_yield;
   uint64_t write_thread_max_yield_usec;
   uint64_t write_thread_slow_yield_usec;
   bool skip_stats_update_on_db_open;
+  bool skip_checking_sst_file_sizes_on_db_open;
   WALRecoveryMode wal_recovery_mode;
   bool allow_2pc;
   std::shared_ptr<Cache> row_cache;
@@ -82,10 +85,24 @@ struct ImmutableDBOptions {
   bool atomic_flush;
   bool avoid_unnecessary_blocking_io;
   bool persist_stats_to_disk;
+  bool write_dbid_to_manifest;
   size_t log_readahead_size;
+  std::shared_ptr<FileChecksumGenFactory> file_checksum_gen_factory;
+  bool best_efforts_recovery;
+  int max_bgerror_resume_count;
+  uint64_t bgerror_resume_retry_interval;
+  bool allow_data_in_errors;
+  std::string db_host_id;
+  FileTypeSet checksum_handoff_file_types;
+  // Convenience/Helper objects that are not part of the base DBOptions
+  std::shared_ptr<FileSystem> fs;
+  SystemClock* clock;
+  Statistics* stats;
+  Logger* logger;
 };
 
 struct MutableDBOptions {
+  static const char* kName() { return "MutableDBOptions"; }
   MutableDBOptions();
   explicit MutableDBOptions(const MutableDBOptions& options) = default;
   explicit MutableDBOptions(const DBOptions& options);
@@ -95,6 +112,7 @@ struct MutableDBOptions {
   int max_background_jobs;
   int base_background_compactions;
   int max_background_compactions;
+  uint32_t max_subcompactions;
   bool avoid_flush_during_shutdown;
   size_t writable_file_max_buffer_size;
   uint64_t delayed_write_rate;
@@ -111,4 +129,4 @@ struct MutableDBOptions {
   int max_background_flushes;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

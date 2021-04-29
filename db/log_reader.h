@@ -12,13 +12,12 @@
 #include <stdint.h>
 
 #include "db/log_format.h"
+#include "file/sequence_file_reader.h"
+#include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
-#include "rocksdb/options.h"
 
-namespace rocksdb {
-
-class SequentialFileReader;
+namespace ROCKSDB_NAMESPACE {
 class Logger;
 
 namespace log {
@@ -50,9 +49,11 @@ class Reader {
   //
   // If "checksum" is true, verify checksums if available.
   Reader(std::shared_ptr<Logger> info_log,
-         // @lint-ignore TXT2 T25377293 Grandfathered in
          std::unique_ptr<SequentialFileReader>&& file, Reporter* reporter,
          bool checksum, uint64_t log_num);
+  // No copying allowed
+  Reader(const Reader&) = delete;
+  void operator=(const Reader&) = delete;
 
   virtual ~Reader();
 
@@ -69,6 +70,11 @@ class Reader {
   //
   // Undefined before the first call to ReadRecord.
   uint64_t LastRecordOffset();
+
+  // Returns the first physical offset after the last record returned by
+  // ReadRecord, or zero before first call to ReadRecord. This can also be
+  // thought of as the "current" position in processing the file bytes.
+  uint64_t LastRecordEnd();
 
   // returns true if the reader has encountered an eof condition.
   bool IsEOF() {
@@ -90,6 +96,10 @@ class Reader {
   Reporter* GetReporter() const { return reporter_; }
 
   uint64_t GetLogNumber() const { return log_number_; }
+
+  size_t GetReadOffset() const {
+    return static_cast<size_t>(end_of_buffer_offset_);
+  }
 
  protected:
   std::shared_ptr<Logger> info_log_;
@@ -148,17 +158,11 @@ class Reader {
   // buffer_ must be updated to remove the dropped bytes prior to invocation.
   void ReportCorruption(size_t bytes, const char* reason);
   void ReportDrop(size_t bytes, const Status& reason);
-
- private:
-  // No copying allowed
-  Reader(const Reader&);
-  void operator=(const Reader&);
 };
 
 class FragmentBufferedReader : public Reader {
  public:
   FragmentBufferedReader(std::shared_ptr<Logger> info_log,
-                         // @lint-ignore TXT2 T25377293 Grandfathered in
                          std::unique_ptr<SequentialFileReader>&& _file,
                          Reporter* reporter, bool checksum, uint64_t log_num)
       : Reader(info_log, std::move(_file), reporter, checksum, log_num),
@@ -185,4 +189,4 @@ class FragmentBufferedReader : public Reader {
 };
 
 }  // namespace log
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

@@ -7,28 +7,24 @@
 #include <sstream>
 #include "monitoring/perf_context_imp.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
-#if defined(NPERF_CONTEXT) || !defined(ROCKSDB_SUPPORT_THREAD_LOCAL)
+#if defined(NPERF_CONTEXT)
+// Should not be used because the counters are not thread-safe.
+// Put here just to make get_perf_context() simple without ifdef.
 PerfContext perf_context;
-#else
+#elif defined(ROCKSDB_SUPPORT_THREAD_LOCAL)
 #if defined(OS_SOLARIS)
-__thread PerfContext perf_context_;
-#else
+__thread PerfContext perf_context;
+#else   // OS_SOLARIS
 thread_local PerfContext perf_context;
-#endif
+#endif  // OS_SOLARIS
+#else
+#error "No thread-local support. Disable perf context with -DNPERF_CONTEXT."
 #endif
 
 PerfContext* get_perf_context() {
-#if defined(NPERF_CONTEXT) || !defined(ROCKSDB_SUPPORT_THREAD_LOCAL)
   return &perf_context;
-#else
-#if defined(OS_SOLARIS)
-  return &perf_context_;
-#else
-  return &perf_context;
-#endif
-#endif
 }
 
 PerfContext::~PerfContext() {
@@ -38,7 +34,9 @@ PerfContext::~PerfContext() {
 }
 
 PerfContext::PerfContext(const PerfContext& other) {
-#ifndef NPERF_CONTEXT
+#ifdef NPERF_CONTEXT
+  (void)other;
+#else
   user_key_comparison_count = other.user_key_comparison_count;
   block_cache_hit_count = other.block_cache_hit_count;
   block_read_count = other.block_read_count;
@@ -133,7 +131,9 @@ PerfContext::PerfContext(const PerfContext& other) {
 }
 
 PerfContext::PerfContext(PerfContext&& other) noexcept {
-#ifndef NPERF_CONTEXT
+#ifdef NPERF_CONTEXT
+  (void)other;
+#else
   user_key_comparison_count = other.user_key_comparison_count;
   block_cache_hit_count = other.block_cache_hit_count;
   block_read_count = other.block_read_count;
@@ -230,7 +230,9 @@ PerfContext::PerfContext(PerfContext&& other) noexcept {
 // TODO(Zhongyi): reduce code duplication between copy constructor and
 // assignment operator
 PerfContext& PerfContext::operator=(const PerfContext& other) {
-#ifndef NPERF_CONTEXT
+#ifdef NPERF_CONTEXT
+  (void)other;
+#else
   user_key_comparison_count = other.user_key_comparison_count;
   block_cache_hit_count = other.block_cache_hit_count;
   block_read_count = other.block_read_count;
@@ -443,6 +445,7 @@ void PerfContextByLevel::Reset() {
 
 std::string PerfContext::ToString(bool exclude_zero_counters) const {
 #ifdef NPERF_CONTEXT
+  (void)exclude_zero_counters;
   return "";
 #else
   std::ostringstream ss;
@@ -529,7 +532,10 @@ std::string PerfContext::ToString(bool exclude_zero_counters) const {
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(bloom_filter_full_true_positive);
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(block_cache_hit_count);
   PERF_CONTEXT_BY_LEVEL_OUTPUT_ONE_COUNTER(block_cache_miss_count);
-  return ss.str();
+
+  std::string str = ss.str();
+  str.erase(str.find_last_not_of(", ") + 1);
+  return str;
 #endif
 }
 
@@ -553,4 +559,4 @@ void PerfContext::ClearPerLevelPerfContext(){
   per_level_perf_context_enabled = false;
 }
 
-}
+}  // namespace ROCKSDB_NAMESPACE

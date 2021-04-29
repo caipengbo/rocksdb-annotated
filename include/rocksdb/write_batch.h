@@ -32,7 +32,7 @@
 #include "rocksdb/status.h"
 #include "rocksdb/write_batch_base.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Slice;
 class ColumnFamilyHandle;
@@ -62,6 +62,11 @@ class WriteBatch : public WriteBatchBase {
  public:
   explicit WriteBatch(size_t reserved_bytes = 0, size_t max_bytes = 0);
   explicit WriteBatch(size_t reserved_bytes, size_t max_bytes, size_t ts_sz);
+  // `protection_bytes_per_key` is the number of bytes used to store
+  // protection information for each key entry. Currently supported values are
+  // zero (disabled) and eight.
+  explicit WriteBatch(size_t reserved_bytes, size_t max_bytes, size_t ts_sz,
+                      size_t protection_bytes_per_key);
   ~WriteBatch() override;
 
   using WriteBatchBase::Put;
@@ -271,13 +276,11 @@ class WriteBatch : public WriteBatchBase {
     virtual bool Continue();
 
    protected:
-    friend class WriteBatch;
+    friend class WriteBatchInternal;
     virtual bool WriteAfterCommit() const { return true; }
     virtual bool WriteBeforePrepare() const { return false; }
   };
   Status Iterate(Handler* handler) const;
-  class Iterator;
-  Iterator* NewIterator() const { return new Iterator(rep_); }
 
   // Retrieve the serialized version of this batch.
   const std::string& Data() const { return rep_; }
@@ -286,7 +289,7 @@ class WriteBatch : public WriteBatchBase {
   size_t GetDataSize() const { return rep_.size(); }
 
   // Returns the number of updates in the batch
-  int Count() const;
+  uint32_t Count() const;
 
   // Returns true if PutCF will be called during Iterate
   bool HasPut() const;
@@ -309,10 +312,10 @@ class WriteBatch : public WriteBatchBase {
   // Returns true if MarkEndPrepare will be called during Iterate
   bool HasEndPrepare() const;
 
-  // Returns trie if MarkCommit will be called during Iterate
+  // Returns true if MarkCommit will be called during Iterate
   bool HasCommit() const;
 
-  // Returns trie if MarkRollback will be called during Iterate
+  // Returns true if MarkRollback will be called during Iterate
   bool HasRollback() const;
 
   // Assign timestamp to write batch
@@ -339,6 +342,9 @@ class WriteBatch : public WriteBatchBase {
   const SavePoint& GetWalTerminationPoint() const { return wal_term_point_; }
 
   void SetMaxBytes(size_t max_bytes) override { max_bytes_ = max_bytes; }
+
+  struct ProtectionInfo;
+  size_t GetProtectionBytesPerKey() const;
 
  private:
   friend class WriteBatchInternal;
@@ -369,49 +375,11 @@ class WriteBatch : public WriteBatchBase {
   // more details.
   bool is_latest_persistent_state_ = false;
 
+  std::unique_ptr<ProtectionInfo> prot_info_;
+
  protected:
   std::string rep_;  // See comment in write_batch.cc for the format of rep_
   const size_t timestamp_size_;
-
-  // Intentionally copyable
- public:
-  class Iterator {
-   private:
-    Slice rep_;
-    Slice input_;
-    Slice key_;
-    Slice value_;
-    uint32_t column_family_;
-    char tag_;
-    bool valid_;
-
-   public:
-    explicit Iterator(const Slice& rep) : rep_(rep), valid_(false) {}
-
-    bool Valid() const { return valid_; }
-
-    Slice Key() const { return key_; }
-
-    Slice Value() const { return value_; }
-
-    uint32_t GetColumnFamilyId() const { return column_family_; }
-
-    char GetValueType() const { return tag_; };
-
-    void SeekToFirst();
-
-    void Next();
-  };
-  class WriteBatchRef {
-   public:
-    explicit WriteBatchRef(const Slice& rep) : rep_(rep) {}
-    Iterator* NewIterator() const { return new Iterator(rep_); }
-
-    int Count() const;
-
-   private:
-    const Slice& rep_;
-  };
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

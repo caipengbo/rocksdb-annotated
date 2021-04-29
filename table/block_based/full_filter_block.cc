@@ -4,55 +4,65 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #include "table/block_based/full_filter_block.h"
-
-#ifdef ROCKSDB_MALLOC_USABLE_SIZE
-#ifdef OS_FREEBSD
-#include <malloc_np.h>
-#else
-#include <malloc.h>
-#endif
-#endif
+#include <array>
 
 #include "monitoring/perf_context_imp.h"
+#include "port/malloc.h"
 #include "port/port.h"
 #include "rocksdb/filter_policy.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "util/coding.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 FullFilterBlockBuilder::FullFilterBlockBuilder(
-    const SliceTransform* prefix_extractor, bool whole_key_filtering,
+    const SliceTransform* _prefix_extractor, bool whole_key_filtering,
     FilterBitsBuilder* filter_bits_builder)
-    : prefix_extractor_(prefix_extractor),
+    : prefix_extractor_(_prefix_extractor),
       whole_key_filtering_(whole_key_filtering),
       last_whole_key_recorded_(false),
       last_prefix_recorded_(false),
+      last_key_in_domain_(false),
       num_added_(0) {
   assert(filter_bits_builder != nullptr);
   filter_bits_builder_.reset(filter_bits_builder);
 }
 
-void FullFilterBlockBuilder::Add(const Slice& key) {
-  const bool add_prefix = prefix_extractor_ && prefix_extractor_->InDomain(key);
+void FullFilterBlockBuilder::Add(const Slice& key_without_ts) {
+  const bool add_prefix =
+      prefix_extractor_ && prefix_extractor_->InDomain(key_without_ts);
+
+  if (!last_prefix_recorded_ && last_key_in_domain_) {
+    // We can reach here when a new filter partition starts in partitioned
+    // filter. The last prefix in the previous partition should be added if
+    // necessary regardless of key_without_ts, to support prefix SeekForPrev.
+    AddKey(last_prefix_str_);
+    last_prefix_recorded_ = true;
+  }
+
   if (whole_key_filtering_) {
     if (!add_prefix) {
-      AddKey(key);
+      AddKey(key_without_ts);
     } else {
       // if both whole_key and prefix are added to bloom then we will have whole
-      // key and prefix addition being interleaved and thus cannot rely on the
-      // bits builder to properly detect the duplicates by comparing with the
-      // last item.
+      // key_without_ts and prefix addition being interleaved and thus cannot
+      // rely on the bits builder to properly detect the duplicates by comparing
+      // with the last item.
       Slice last_whole_key = Slice(last_whole_key_str_);
-      if (!last_whole_key_recorded_ || last_whole_key.compare(key) != 0) {
-        AddKey(key);
+      if (!last_whole_key_recorded_ ||
+          last_whole_key.compare(key_without_ts) != 0) {
+        AddKey(key_without_ts);
         last_whole_key_recorded_ = true;
-        last_whole_key_str_.assign(key.data(), key.size());
+        last_whole_key_str_.assign(key_without_ts.data(),
+                                   key_without_ts.size());
       }
     }
   }
   if (add_prefix) {
-    AddPrefix(key);
+    last_key_in_domain_ = true;
+    AddPrefix(key_without_ts);
+  } else {
+    last_key_in_domain_ = false;
   }
 }
 
@@ -63,7 +73,8 @@ inline void FullFilterBlockBuilder::AddKey(const Slice& key) {
 }
 
 // Add prefix to filter if needed
-inline void FullFilterBlockBuilder::AddPrefix(const Slice& key) {
+void FullFilterBlockBuilder::AddPrefix(const Slice& key) {
+  assert(prefix_extractor_ && prefix_extractor_->InDomain(key));
   Slice prefix = prefix_extractor_->Transform(key);
   if (whole_key_filtering_) {
     // if both whole_key and prefix are added to bloom then we will have whole
@@ -99,7 +110,8 @@ Slice FullFilterBlockBuilder::Finish(const BlockHandle& /*tmp*/,
 }
 
 FullFilterBlockReader::FullFilterBlockReader(
-    const BlockBasedTable* t, CachableEntry<BlockContents>&& filter_block)
+    const BlockBasedTable* t,
+    CachableEntry<ParsedFullFilterBlock>&& filter_block)
     : FilterBlockReaderCommon(t, std::move(filter_block)) {
   const SliceTransform* const prefix_extractor = table_prefix_extractor();
   if (prefix_extractor) {
@@ -124,19 +136,20 @@ bool FullFilterBlockReader::KeyMayMatch(
 }
 
 std::unique_ptr<FilterBlockReader> FullFilterBlockReader::Create(
-    const BlockBasedTable* table, FilePrefetchBuffer* prefetch_buffer,
-    bool use_cache, bool prefetch, bool pin,
-    BlockCacheLookupContext* lookup_context) {
+    const BlockBasedTable* table, const ReadOptions& ro,
+    FilePrefetchBuffer* prefetch_buffer, bool use_cache, bool prefetch,
+    bool pin, BlockCacheLookupContext* lookup_context) {
   assert(table);
   assert(table->get_rep());
   assert(!pin || prefetch);
 
-  CachableEntry<BlockContents> filter_block;
+  CachableEntry<ParsedFullFilterBlock> filter_block;
   if (prefetch || !use_cache) {
-    const Status s = ReadFilterBlock(table, prefetch_buffer, ReadOptions(),
-                                     use_cache, nullptr /* get_context */,
-                                     lookup_context, &filter_block);
+    const Status s = ReadFilterBlock(table, prefetch_buffer, ro, use_cache,
+                                     nullptr /* get_context */, lookup_context,
+                                     &filter_block);
     if (!s.ok()) {
+      IGNORE_STATUS_IF_ERROR(s);
       return std::unique_ptr<FilterBlockReader>();
     }
 
@@ -164,25 +177,21 @@ bool FullFilterBlockReader::PrefixMayMatch(
 bool FullFilterBlockReader::MayMatch(
     const Slice& entry, bool no_io, GetContext* get_context,
     BlockCacheLookupContext* lookup_context) const {
-  CachableEntry<BlockContents> filter_block;
+  CachableEntry<ParsedFullFilterBlock> filter_block;
 
   const Status s =
       GetOrReadFilterBlock(no_io, get_context, lookup_context, &filter_block);
   if (!s.ok()) {
+    IGNORE_STATUS_IF_ERROR(s);
     return true;
   }
 
   assert(filter_block.GetValue());
 
-  if (filter_block.GetValue()->data.size() != 0) {
-    assert(table());
-    assert(table()->get_rep());
+  FilterBitsReader* const filter_bits_reader =
+      filter_block.GetValue()->filter_bits_reader();
 
-    std::unique_ptr<FilterBitsReader> filter_bits_reader(
-        table()->get_rep()->filter_policy->GetFilterBitsReader(
-            filter_block.GetValue()->data));
-    assert(filter_bits_reader != nullptr);
-
+  if (filter_bits_reader) {
     if (filter_bits_reader->MayMatch(entry)) {
       PERF_COUNTER_ADD(bloom_sst_hit_count, 1);
       return true;
@@ -199,7 +208,6 @@ void FullFilterBlockReader::KeysMayMatch(
     uint64_t block_offset, const bool no_io,
     BlockCacheLookupContext* lookup_context) {
 #ifdef NDEBUG
-  (void)range;
   (void)block_offset;
 #endif
   assert(block_offset == kNotValid);
@@ -208,62 +216,74 @@ void FullFilterBlockReader::KeysMayMatch(
     // present
     return;
   }
-  MayMatch(range, no_io, lookup_context);
+  MayMatch(range, no_io, nullptr, lookup_context);
 }
 
 void FullFilterBlockReader::PrefixesMayMatch(
-    MultiGetRange* range, const SliceTransform* /* prefix_extractor */,
+    MultiGetRange* range, const SliceTransform* prefix_extractor,
     uint64_t block_offset, const bool no_io,
     BlockCacheLookupContext* lookup_context) {
 #ifdef NDEBUG
-  (void)range;
   (void)block_offset;
 #endif
   assert(block_offset == kNotValid);
-  MayMatch(range, no_io, lookup_context);
+  MayMatch(range, no_io, prefix_extractor, lookup_context);
 }
 
 void FullFilterBlockReader::MayMatch(
-    MultiGetRange* range, bool no_io,
+    MultiGetRange* range, bool no_io, const SliceTransform* prefix_extractor,
     BlockCacheLookupContext* lookup_context) const {
-  CachableEntry<BlockContents> filter_block;
+  CachableEntry<ParsedFullFilterBlock> filter_block;
 
   const Status s = GetOrReadFilterBlock(no_io, range->begin()->get_context,
                                         lookup_context, &filter_block);
   if (!s.ok()) {
+    IGNORE_STATUS_IF_ERROR(s);
     return;
   }
 
   assert(filter_block.GetValue());
 
-  if (filter_block.GetValue()->data.size() == 0) {
+  FilterBitsReader* const filter_bits_reader =
+      filter_block.GetValue()->filter_bits_reader();
+
+  if (!filter_bits_reader) {
     return;
   }
-
-  assert(table());
-  assert(table()->get_rep());
-
-  std::unique_ptr<FilterBitsReader> filter_bits_reader(
-      table()->get_rep()->filter_policy->GetFilterBitsReader(
-          filter_block.GetValue()->data));
-  assert(filter_bits_reader != nullptr);
 
   // We need to use an array instead of autovector for may_match since
   // &may_match[0] doesn't work for autovector<bool> (compiler error). So
   // declare both keys and may_match as arrays, which is also slightly less
   // expensive compared to autovector
-  Slice* keys[MultiGetContext::MAX_BATCH_SIZE];
-  bool may_match[MultiGetContext::MAX_BATCH_SIZE] = {false};
+  std::array<Slice*, MultiGetContext::MAX_BATCH_SIZE> keys;
+  std::array<bool, MultiGetContext::MAX_BATCH_SIZE> may_match = {{true}};
+  autovector<Slice, MultiGetContext::MAX_BATCH_SIZE> prefixes;
   int num_keys = 0;
-  for (auto iter = range->begin(); iter != range->end(); ++iter) {
-    keys[num_keys++] = &iter->ukey;
+  MultiGetRange filter_range(*range, range->begin(), range->end());
+  for (auto iter = filter_range.begin(); iter != filter_range.end(); ++iter) {
+    if (!prefix_extractor) {
+      keys[num_keys++] = &iter->ukey_without_ts;
+    } else if (prefix_extractor->InDomain(iter->ukey_without_ts)) {
+      prefixes.emplace_back(prefix_extractor->Transform(iter->ukey_without_ts));
+      keys[num_keys++] = &prefixes.back();
+    } else {
+      filter_range.SkipKey(iter);
+    }
   }
+
   filter_bits_reader->MayMatch(num_keys, &keys[0], &may_match[0]);
 
   int i = 0;
-  for (auto iter = range->begin(); iter != range->end(); ++iter) {
+  for (auto iter = filter_range.begin(); iter != filter_range.end(); ++iter) {
     if (!may_match[i]) {
+      // Update original MultiGet range to skip this key. The filter_range
+      // was temporarily used just to skip keys not in prefix_extractor domain
       range->SkipKey(iter);
+      PERF_COUNTER_ADD(bloom_sst_miss_count, 1);
+    } else {
+      // PERF_COUNTER_ADD(bloom_sst_hit_count, 1);
+      PerfContext* perf_ctx = get_perf_context();
+      perf_ctx->bloom_sst_hit_count++;
     }
     ++i;
   }
@@ -280,22 +300,23 @@ size_t FullFilterBlockReader::ApproximateMemoryUsage() const {
 }
 
 bool FullFilterBlockReader::RangeMayExist(
-    const Slice* iterate_upper_bound, const Slice& user_key,
+    const Slice* iterate_upper_bound, const Slice& user_key_without_ts,
     const SliceTransform* prefix_extractor, const Comparator* comparator,
     const Slice* const const_ikey_ptr, bool* filter_checked,
-    bool need_upper_bound_check, BlockCacheLookupContext* lookup_context) {
-  if (!prefix_extractor || !prefix_extractor->InDomain(user_key)) {
+    bool need_upper_bound_check, bool no_io,
+    BlockCacheLookupContext* lookup_context) {
+  if (!prefix_extractor || !prefix_extractor->InDomain(user_key_without_ts)) {
     *filter_checked = false;
     return true;
   }
-  Slice prefix = prefix_extractor->Transform(user_key);
+  Slice prefix = prefix_extractor->Transform(user_key_without_ts);
   if (need_upper_bound_check &&
       !IsFilterCompatible(iterate_upper_bound, prefix, comparator)) {
     *filter_checked = false;
     return true;
   } else {
     *filter_checked = true;
-    return PrefixMayMatch(prefix, prefix_extractor, kNotValid, false,
+    return PrefixMayMatch(prefix, prefix_extractor, kNotValid, no_io,
                           const_ikey_ptr, /* get_context */ nullptr,
                           lookup_context);
   }
@@ -314,7 +335,8 @@ bool FullFilterBlockReader::IsFilterCompatible(
     }
     Slice upper_bound_xform = prefix_extractor->Transform(*iterate_upper_bound);
     // first check if user_key and upper_bound all share the same prefix
-    if (!comparator->Equal(prefix, upper_bound_xform)) {
+    if (comparator->CompareWithoutTimestamp(prefix, false, upper_bound_xform,
+                                            false) != 0) {
       // second check if user_key's prefix is the immediate predecessor of
       // upper_bound and have the same length. If so, we know for sure all
       // keys in the range [user_key, upper_bound) share the same prefix.
@@ -333,4 +355,4 @@ bool FullFilterBlockReader::IsFilterCompatible(
   }
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

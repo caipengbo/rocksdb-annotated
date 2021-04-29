@@ -3,16 +3,16 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 //
+#include "monitoring/statistics.h"
 
+#include <algorithm>
+#include <cinttypes>
+#include <cstdio>
 #include "rocksdb/statistics.h"
 
-#include <cinttypes>
+namespace ROCKSDB_NAMESPACE {
 
-#include "monitoring/statistics_impl.h"
-
-namespace rocksdb {
-
-// The order of items listed in Tickers should be the same as
+// The order of items listed in  Tickers should be the same as
 // the order listed in TickersNameMap
 const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {BLOCK_CACHE_MISS, "rocksdb.block.cache.miss"},
@@ -104,6 +104,12 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {COMPACT_READ_BYTES, "rocksdb.compact.read.bytes"},
     {COMPACT_WRITE_BYTES, "rocksdb.compact.write.bytes"},
     {FLUSH_WRITE_BYTES, "rocksdb.flush.write.bytes"},
+    {COMPACT_READ_BYTES_MARKED, "rocksdb.compact.read.marked.bytes"},
+    {COMPACT_READ_BYTES_PERIODIC, "rocksdb.compact.read.periodic.bytes"},
+    {COMPACT_READ_BYTES_TTL, "rocksdb.compact.read.ttl.bytes"},
+    {COMPACT_WRITE_BYTES_MARKED, "rocksdb.compact.write.marked.bytes"},
+    {COMPACT_WRITE_BYTES_PERIODIC, "rocksdb.compact.write.periodic.bytes"},
+    {COMPACT_WRITE_BYTES_TTL, "rocksdb.compact.write.ttl.bytes"},
     {NUMBER_DIRECT_LOAD_TABLE_PROPERTIES,
      "rocksdb.number.direct.load.table.properties"},
     {NUMBER_SUPERVERSION_ACQUIRES, "rocksdb.number.superversion_acquires"},
@@ -161,6 +167,7 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
      "rocksdb.txn.overhead.mutex.old.commit.map"},
     {TXN_DUPLICATE_KEY_OVERHEAD, "rocksdb.txn.overhead.duplicate.key"},
     {TXN_SNAPSHOT_MUTEX_OVERHEAD, "rocksdb.txn.overhead.mutex.snapshot"},
+    {TXN_GET_TRY_AGAIN, "rocksdb.txn.get.tryagain"},
     {NUMBER_MULTIGET_KEYS_FOUND, "rocksdb.number.multiget.keys.found"},
     {NO_ITERATOR_CREATED, "rocksdb.num.iterator.created"},
     {NO_ITERATOR_DELETED, "rocksdb.num.iterator.deleted"},
@@ -174,6 +181,26 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
      "rocksdb.block.cache.compression.dict.bytes.insert"},
     {BLOCK_CACHE_COMPRESSION_DICT_BYTES_EVICT,
      "rocksdb.block.cache.compression.dict.bytes.evict"},
+    {BLOCK_CACHE_ADD_REDUNDANT, "rocksdb.block.cache.add.redundant"},
+    {BLOCK_CACHE_INDEX_ADD_REDUNDANT,
+     "rocksdb.block.cache.index.add.redundant"},
+    {BLOCK_CACHE_FILTER_ADD_REDUNDANT,
+     "rocksdb.block.cache.filter.add.redundant"},
+    {BLOCK_CACHE_DATA_ADD_REDUNDANT, "rocksdb.block.cache.data.add.redundant"},
+    {BLOCK_CACHE_COMPRESSION_DICT_ADD_REDUNDANT,
+     "rocksdb.block.cache.compression.dict.add.redundant"},
+    {FILES_MARKED_TRASH, "rocksdb.files.marked.trash"},
+    {FILES_DELETED_IMMEDIATELY, "rocksdb.files.deleted.immediately"},
+    {ERROR_HANDLER_BG_ERROR_COUNT, "rocksdb.error.handler.bg.errro.count"},
+    {ERROR_HANDLER_BG_IO_ERROR_COUNT,
+     "rocksdb.error.handler.bg.io.errro.count"},
+    {ERROR_HANDLER_BG_RETRYABLE_IO_ERROR_COUNT,
+     "rocksdb.error.handler.bg.retryable.io.errro.count"},
+    {ERROR_HANDLER_AUTORESUME_COUNT, "rocksdb.error.handler.autoresume.count"},
+    {ERROR_HANDLER_AUTORESUME_RETRY_TOTAL_COUNT,
+     "rocksdb.error.handler.autoresume.retry.total.count"},
+    {ERROR_HANDLER_AUTORESUME_SUCCESS_COUNT,
+     "rocksdb.error.handler.autoresume.success.count"},
 };
 
 const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
@@ -225,7 +252,192 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {BLOB_DB_DECOMPRESSION_MICROS, "rocksdb.blobdb.decompression.micros"},
     {FLUSH_TIME, "rocksdb.db.flush.micros"},
     {SST_BATCH_SIZE, "rocksdb.sst.batch.size"},
-    {DB_WRITE_WAL_TIME, "rocksdb.db.write.wal.time"},
+    {NUM_INDEX_AND_FILTER_BLOCKS_READ_PER_LEVEL,
+     "rocksdb.num.index.and.filter.blocks.read.per.level"},
+    {NUM_DATA_BLOCKS_READ_PER_LEVEL, "rocksdb.num.data.blocks.read.per.level"},
+    {NUM_SST_READ_PER_LEVEL, "rocksdb.num.sst.read.per.level"},
+    {ERROR_HANDLER_AUTORESUME_RETRY_COUNT,
+     "rocksdb.error.handler.autoresume.retry.count"},
 };
 
-} // namespace rocksdb
+std::shared_ptr<Statistics> CreateDBStatistics() {
+  return std::make_shared<StatisticsImpl>(nullptr);
+}
+
+StatisticsImpl::StatisticsImpl(std::shared_ptr<Statistics> stats)
+    : stats_(std::move(stats)) {}
+
+StatisticsImpl::~StatisticsImpl() {}
+
+uint64_t StatisticsImpl::getTickerCount(uint32_t tickerType) const {
+  MutexLock lock(&aggregate_lock_);
+  return getTickerCountLocked(tickerType);
+}
+
+uint64_t StatisticsImpl::getTickerCountLocked(uint32_t tickerType) const {
+  assert(tickerType < TICKER_ENUM_MAX);
+  uint64_t res = 0;
+  for (size_t core_idx = 0; core_idx < per_core_stats_.Size(); ++core_idx) {
+    res += per_core_stats_.AccessAtCore(core_idx)->tickers_[tickerType];
+  }
+  return res;
+}
+
+void StatisticsImpl::histogramData(uint32_t histogramType,
+                                   HistogramData* const data) const {
+  MutexLock lock(&aggregate_lock_);
+  getHistogramImplLocked(histogramType)->Data(data);
+}
+
+std::unique_ptr<HistogramImpl> StatisticsImpl::getHistogramImplLocked(
+    uint32_t histogramType) const {
+  assert(histogramType < HISTOGRAM_ENUM_MAX);
+  std::unique_ptr<HistogramImpl> res_hist(new HistogramImpl());
+  for (size_t core_idx = 0; core_idx < per_core_stats_.Size(); ++core_idx) {
+    res_hist->Merge(
+        per_core_stats_.AccessAtCore(core_idx)->histograms_[histogramType]);
+  }
+  return res_hist;
+}
+
+std::string StatisticsImpl::getHistogramString(uint32_t histogramType) const {
+  MutexLock lock(&aggregate_lock_);
+  return getHistogramImplLocked(histogramType)->ToString();
+}
+
+void StatisticsImpl::setTickerCount(uint32_t tickerType, uint64_t count) {
+  {
+    MutexLock lock(&aggregate_lock_);
+    setTickerCountLocked(tickerType, count);
+  }
+  if (stats_ && tickerType < TICKER_ENUM_MAX) {
+    stats_->setTickerCount(tickerType, count);
+  }
+}
+
+void StatisticsImpl::setTickerCountLocked(uint32_t tickerType, uint64_t count) {
+  assert(tickerType < TICKER_ENUM_MAX);
+  for (size_t core_idx = 0; core_idx < per_core_stats_.Size(); ++core_idx) {
+    if (core_idx == 0) {
+      per_core_stats_.AccessAtCore(core_idx)->tickers_[tickerType] = count;
+    } else {
+      per_core_stats_.AccessAtCore(core_idx)->tickers_[tickerType] = 0;
+    }
+  }
+}
+
+uint64_t StatisticsImpl::getAndResetTickerCount(uint32_t tickerType) {
+  uint64_t sum = 0;
+  {
+    MutexLock lock(&aggregate_lock_);
+    assert(tickerType < TICKER_ENUM_MAX);
+    for (size_t core_idx = 0; core_idx < per_core_stats_.Size(); ++core_idx) {
+      sum +=
+          per_core_stats_.AccessAtCore(core_idx)->tickers_[tickerType].exchange(
+              0, std::memory_order_relaxed);
+    }
+  }
+  if (stats_ && tickerType < TICKER_ENUM_MAX) {
+    stats_->setTickerCount(tickerType, 0);
+  }
+  return sum;
+}
+
+void StatisticsImpl::recordTick(uint32_t tickerType, uint64_t count) {
+  if (get_stats_level() <= StatsLevel::kExceptTickers) {
+    return;
+  }
+  if (tickerType < TICKER_ENUM_MAX) {
+    per_core_stats_.Access()->tickers_[tickerType].fetch_add(
+        count, std::memory_order_relaxed);
+    if (stats_) {
+      stats_->recordTick(tickerType, count);
+    }
+  } else {
+    assert(false);
+  }
+}
+
+void StatisticsImpl::recordInHistogram(uint32_t histogramType, uint64_t value) {
+  assert(histogramType < HISTOGRAM_ENUM_MAX);
+  if (get_stats_level() <= StatsLevel::kExceptHistogramOrTimers) {
+    return;
+  }
+  per_core_stats_.Access()->histograms_[histogramType].Add(value);
+  if (stats_ && histogramType < HISTOGRAM_ENUM_MAX) {
+    stats_->recordInHistogram(histogramType, value);
+  }
+}
+
+Status StatisticsImpl::Reset() {
+  MutexLock lock(&aggregate_lock_);
+  for (uint32_t i = 0; i < TICKER_ENUM_MAX; ++i) {
+    setTickerCountLocked(i, 0);
+  }
+  for (uint32_t i = 0; i < HISTOGRAM_ENUM_MAX; ++i) {
+    for (size_t core_idx = 0; core_idx < per_core_stats_.Size(); ++core_idx) {
+      per_core_stats_.AccessAtCore(core_idx)->histograms_[i].Clear();
+    }
+  }
+  return Status::OK();
+}
+
+namespace {
+
+// a buffer size used for temp string buffers
+const int kTmpStrBufferSize = 200;
+
+} // namespace
+
+std::string StatisticsImpl::ToString() const {
+  MutexLock lock(&aggregate_lock_);
+  std::string res;
+  res.reserve(20000);
+  for (const auto& t : TickersNameMap) {
+    assert(t.first < TICKER_ENUM_MAX);
+    char buffer[kTmpStrBufferSize];
+    snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+             t.second.c_str(), getTickerCountLocked(t.first));
+    res.append(buffer);
+  }
+  for (const auto& h : HistogramsNameMap) {
+    assert(h.first < HISTOGRAM_ENUM_MAX);
+    char buffer[kTmpStrBufferSize];
+    HistogramData hData;
+    getHistogramImplLocked(h.first)->Data(&hData);
+    // don't handle failures - buffer should always be big enough and arguments
+    // should be provided correctly
+    int ret =
+        snprintf(buffer, kTmpStrBufferSize,
+                 "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
+                 " SUM : %" PRIu64 "\n",
+                 h.second.c_str(), hData.median, hData.percentile95,
+                 hData.percentile99, hData.max, hData.count, hData.sum);
+    if (ret < 0 || ret >= kTmpStrBufferSize) {
+      assert(false);
+      continue;
+    }
+    res.append(buffer);
+  }
+  res.shrink_to_fit();
+  return res;
+}
+
+bool StatisticsImpl::getTickerMap(
+    std::map<std::string, uint64_t>* stats_map) const {
+  assert(stats_map);
+  if (!stats_map) return false;
+  stats_map->clear();
+  MutexLock lock(&aggregate_lock_);
+  for (const auto& t : TickersNameMap) {
+    assert(t.first < TICKER_ENUM_MAX);
+    (*stats_map)[t.second.c_str()] = getTickerCountLocked(t.first);
+  }
+  return true;
+}
+
+bool StatisticsImpl::HistEnabledForType(uint32_t type) const {
+  return type < HISTOGRAM_ENUM_MAX;
+}
+
+}  // namespace ROCKSDB_NAMESPACE

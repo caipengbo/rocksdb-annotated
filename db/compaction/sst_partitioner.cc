@@ -8,7 +8,7 @@
 
 #include <algorithm>
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 PartitionerResult SstPartitionerFixedPrefix::ShouldPartition(
     const PartitionerRequest& request) {
@@ -41,4 +41,4 @@ std::shared_ptr<SstPartitionerFactory> NewSstPartitionerFixedPrefixFactory(
   return std::make_shared<SstPartitionerFixedPrefixFactory>(prefix_len);
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

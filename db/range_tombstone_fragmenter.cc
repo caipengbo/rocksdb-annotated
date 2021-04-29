@@ -6,17 +6,16 @@
 #include "db/range_tombstone_fragmenter.h"
 
 #include <algorithm>
+#include <cinttypes>
+#include <cstdio>
 #include <functional>
 #include <set>
-
-#include <cinttypes>
-#include <stdio.h>
 
 #include "util/autovector.h"
 #include "util/kv_map.h"
 #include "util/vector_iterator.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 FragmentedRangeTombstoneList::FragmentedRangeTombstoneList(
     std::unique_ptr<InternalIterator> unfragmented_tombstones,
@@ -436,4 +435,4 @@ FragmentedRangeTombstoneIterator::SplitBySnapshot(
   return splits;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

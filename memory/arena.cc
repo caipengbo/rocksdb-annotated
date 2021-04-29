@@ -8,23 +8,19 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "memory/arena.h"
-#ifdef ROCKSDB_MALLOC_USABLE_SIZE
-#ifdef OS_FREEBSD
-#include <malloc_np.h>
-#else
-#include <malloc.h>
-#endif
-#endif
 #ifndef OS_WIN
 #include <sys/mman.h>
 #endif
 #include <algorithm>
+
 #include "logging/logging.h"
+#include "port/malloc.h"
 #include "port/port.h"
 #include "rocksdb/env.h"
 #include "test_util/sync_point.h"
+#include "util/string_util.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // MSVC complains that it is already defined since it is static in the header.
 #ifndef _MSC_VER
@@ -166,7 +162,7 @@ char* Arena::AllocateAligned(size_t bytes, size_t huge_page_size,
 
 #ifdef MAP_HUGETLB
   if (huge_page_size > 0 && bytes > 0) {
-    // Allocate from a huge page TBL table.
+    // Allocate from a huge page TLB table.
     assert(logger != nullptr);  // logger need to be passed in.
     size_t reserved_size =
         ((bytes - 1U) / huge_page_size + 1U) * huge_page_size;
@@ -176,7 +172,7 @@ char* Arena::AllocateAligned(size_t bytes, size_t huge_page_size,
     if (addr == nullptr) {
       ROCKS_LOG_WARN(logger,
                      "AllocateAligned fail to allocate huge TLB pages: %s",
-                     strerror(errno));
+                     errnoStr(errno).c_str());
       // fail back to malloc
     } else {
       return addr;
@@ -236,4 +232,4 @@ char* Arena::AllocateNewBlock(size_t block_bytes) {
   return block;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

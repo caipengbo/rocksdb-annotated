@@ -17,43 +17,33 @@
 
 #include "options/db_options.h"
 #include "port/port.h"
+#include "rocksdb/file_system.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "rocksdb/transaction_log.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Env;
 class Directory;
+class SystemClock;
 class WritableFileWriter;
 
-enum FileType {
-  kLogFile,
-  kDBLockFile,
-  kTableFile,
-  kDescriptorFile,
-  kCurrentFile,
-  kTempFile,
-  kInfoLogFile,  // Either the current one, or an old one
-  kMetaDatabase,
-  kIdentityFile,
-  kOptionsFile,
-  kBlobFile
-};
-
-// Some non-sensitive files are not encrypted to preserve atomicity of file
-// operations.
-extern bool IsCurrentFile(const std::string& fname);
-
-// Determine if the content is read from the valid current file.
-extern bool IsValidCurrentFile(
-    std::unique_ptr<rocksdb::SequentialFile> seq_file);
+#ifdef OS_WIN
+const char kFilePathSeparator = '\\';
+#else
+const char kFilePathSeparator = '/';
+#endif
 
 // Return the name of the log file with the specified number
 // in the db named by "dbname".  The result will be prefixed with
 // "dbname".
 extern std::string LogFileName(const std::string& dbname, uint64_t number);
+
+extern std::string LogFileName(uint64_t number);
+
+extern std::string BlobFileName(uint64_t number);
 
 extern std::string BlobFileName(const std::string& bdirname, uint64_t number);
 
@@ -70,6 +60,8 @@ extern std::string ArchivedLogFileName(const std::string& dbname,
                                        uint64_t num);
 
 extern std::string MakeTableFileName(const std::string& name, uint64_t number);
+
+extern std::string MakeTableFileName(uint64_t number);
 
 // Return the name of sstable with LevelDB suffix
 // created from RocksDB sstable suffixed name
@@ -166,23 +158,27 @@ extern bool ParseFileName(const std::string& filename, uint64_t* number,
 
 // Make the CURRENT file point to the descriptor file with the
 // specified number.
-extern Status SetCurrentFile(Env* env, const std::string& dbname,
-                             uint64_t descriptor_number,
-                             Directory* directory_to_fsync);
+extern IOStatus SetCurrentFile(FileSystem* fs, const std::string& dbname,
+                               uint64_t descriptor_number,
+                               FSDirectory* directory_to_fsync);
 
 // Make the IDENTITY file for the db
-extern Status SetIdentityFile(Env* env, const std::string& dbname);
+extern Status SetIdentityFile(Env* env, const std::string& dbname,
+                              const std::string& db_id = {});
 
 // Sync manifest file `file`.
-extern Status SyncManifest(Env* env, const ImmutableDBOptions* db_options,
-                           WritableFileWriter* file);
+extern IOStatus SyncManifest(const ImmutableDBOptions* db_options,
+                             WritableFileWriter* file);
 
 // Return list of file names of info logs in `file_names`.
 // The list only contains file name. The parent directory name is stored
 // in `parent_dir`.
 // `db_log_dir` should be the one as in options.db_log_dir
-extern Status GetInfoLogFiles(Env* env, const std::string& db_log_dir,
+extern Status GetInfoLogFiles(const std::shared_ptr<FileSystem>& fs,
+                              const std::string& db_log_dir,
                               const std::string& dbname,
                               std::string* parent_dir,
                               std::vector<std::string>* file_names);
-}  // namespace rocksdb
+
+extern std::string NormalizePath(const std::string& path);
+}  // namespace ROCKSDB_NAMESPACE

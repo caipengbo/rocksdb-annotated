@@ -13,10 +13,9 @@
 #include <string>
 #include <vector>
 
-#include "rocksdb/slice.h"
-#include "rocksdb/table_properties.h"
+#include "rocksdb/rocksdb_namespace.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Slice;
 class SliceTransform;
@@ -28,8 +27,6 @@ struct CompactionFilterContext {
   // Is this compaction requested by the client (true),
   // or is it occurring as an automatic compaction process
   bool is_manual_compaction;
-  // Whether output files are in bottommost level or not.
-  bool is_bottommost_level;
 };
 
 // CompactionFilter allows an application to modify/delete a key-value at
@@ -48,7 +45,12 @@ class CompactionFilter {
     kRemove,
     kChangeValue,
     kRemoveAndSkipUntil,
+    kChangeBlobIndex,  // used internally by BlobDB.
+    kIOError,          // used internally by BlobDB.
+    kUndetermined,
   };
+
+  enum class BlobDecision { kKeep, kChangeValue, kCorruption, kIOError };
 
   // Context information of a compaction run
   struct Context {
@@ -57,20 +59,6 @@ class CompactionFilter {
     // Is this compaction requested by the client (true),
     // or is it occurring as an automatic compaction process
     bool is_manual_compaction;
-    // Whether output files are in bottommost level or not.
-    bool is_bottommost_level;
-
-    // The range of the compaction.
-    Slice start_key;
-    Slice end_key;
-    bool is_end_key_inclusive;
-
-    // File numbers of all involved SST files.
-    std::vector<uint64_t> file_numbers;
-
-    // Properties of all involved SST files.
-    std::vector<std::shared_ptr<const TableProperties>> table_properties;
-
     // Which column family this compaction is for.
     uint32_t column_family_id;
   };
@@ -96,7 +84,7 @@ class CompactionFilter {
   //
   // Note that RocksDB snapshots (i.e. call GetSnapshot() API on a
   // DB* object) will not guarantee to preserve the state of the DB with
-  // CompactionFilter. Data seen from a snapshot might disppear after a
+  // CompactionFilter. Data seen from a snapshot might disappear after a
   // compaction finishes. If you use snapshots, think twice about whether you
   // want to use compaction filter and whether you are using it in a safe way.
   //
@@ -128,30 +116,6 @@ class CompactionFilter {
   virtual bool FilterMergeOperand(int /*level*/, const Slice& /*key*/,
                                   const Slice& /*operand*/) const {
     return false;
-  }
-
-  // Almost same as FilterV3, except won't pass out sequence numbers.
-  virtual Decision FilterV2(int level, const Slice& key, ValueType value_type,
-                            const Slice& existing_value, std::string* new_value,
-                            std::string* /*skip_until*/) const {
-    switch (value_type) {
-      case ValueType::kValue: {
-        bool value_changed = false;
-        bool rv = Filter(level, key, existing_value, new_value, &value_changed);
-        if (rv) {
-          return Decision::kRemove;
-        }
-        return value_changed ? Decision::kChangeValue : Decision::kKeep;
-      }
-      case ValueType::kMergeOperand: {
-        bool rv = FilterMergeOperand(level, key, existing_value);
-        return rv ? Decision::kRemove : Decision::kKeep;
-      }
-      case ValueType::kBlobIndex:
-        return Decision::kKeep;
-    }
-    assert(false);
-    return Decision::kKeep;
   }
 
   // An extended API. Called for both values and merge operands.
@@ -187,25 +151,46 @@ class CompactionFilter {
   //       - If you use kRemoveAndSkipUntil, consider also reducing
   //         compaction_readahead_size option.
   //
+  // Should never return kUndetermined.
   // Note: If you are using a TransactionDB, it is not recommended to filter
   // out or modify merge operands (ValueType::kMergeOperand).
   // If a merge operation is filtered out, TransactionDB may not realize there
   // is a write conflict and may allow a Transaction to Commit that should have
   // failed. Instead, it is better to implement any Merge filtering inside the
   // MergeOperator.
-  //
-  // Note: for kTypeBlobIndex, `key` is internal key instead of user key.
-  virtual Decision FilterV3(int level, const Slice& key,
-                            SequenceNumber /*seqno*/, ValueType value_type,
+  virtual Decision FilterV2(int level, const Slice& key, ValueType value_type,
                             const Slice& existing_value, std::string* new_value,
-                            std::string* skip_until) const {
-    return FilterV2(level, key, value_type, existing_value, new_value,
-                    skip_until);
+                            std::string* /*skip_until*/) const {
+    switch (value_type) {
+      case ValueType::kValue: {
+        bool value_changed = false;
+        bool rv = Filter(level, key, existing_value, new_value, &value_changed);
+        if (rv) {
+          return Decision::kRemove;
+        }
+        return value_changed ? Decision::kChangeValue : Decision::kKeep;
+      }
+      case ValueType::kMergeOperand: {
+        bool rv = FilterMergeOperand(level, key, existing_value);
+        return rv ? Decision::kRemove : Decision::kKeep;
+      }
+      case ValueType::kBlobIndex:
+        return Decision::kKeep;
+    }
+    assert(false);
+    return Decision::kKeep;
+  }
+
+  // Internal (BlobDB) use only. Do not override in application code.
+  virtual BlobDecision PrepareBlobOutput(const Slice& /* key */,
+                                         const Slice& /* existing_value */,
+                                         std::string* /* new_value */) const {
+    return BlobDecision::kKeep;
   }
 
   // This function is deprecated. Snapshots will always be ignored for
   // compaction filters, because we realized that not ignoring snapshots doesn't
-  // provide the gurantee we initially thought it would provide. Repeatable
+  // provide the guarantee we initially thought it would provide. Repeatable
   // reads will not be guaranteed anyway. If you override the function and
   // returns false, we will fail the compaction.
   virtual bool IgnoreSnapshots() const { return true; }
@@ -213,6 +198,20 @@ class CompactionFilter {
   // Returns a name that identifies this compaction filter.
   // The name will be printed to LOG file on start up for diagnosis.
   virtual const char* Name() const = 0;
+
+  // Internal (BlobDB) use only. Do not override in application code.
+  virtual bool IsStackedBlobDbInternalCompactionFilter() const { return false; }
+
+  // In the case of BlobDB, it may be possible to reach a decision with only
+  // the key without reading the actual value. Keys whose value_type is
+  // kBlobIndex will be checked by this method.
+  // Returning kUndetermined will cause FilterV2() to be called to make a
+  // decision as usual.
+  virtual Decision FilterBlobByKey(int /*level*/, const Slice& /*key*/,
+                                   std::string* /*new_value*/,
+                                   std::string* /*skip_until*/) const {
+    return Decision::kUndetermined;
+  }
 };
 
 // Each compaction will create a new CompactionFilter allowing the
@@ -228,4 +227,4 @@ class CompactionFilterFactory {
   virtual const char* Name() const = 0;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

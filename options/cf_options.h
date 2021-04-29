@@ -13,14 +13,16 @@
 #include "rocksdb/options.h"
 #include "util/compression.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // ImmutableCFOptions is a data struct used by RocksDB internal. It contains a
 // subset of Options that should not be changed during the entire lifetime
 // of DB. Raw pointers defined in this struct do not have ownership to the data
 // they point to. Options contains std::shared_ptr to these data.
 struct ImmutableCFOptions {
-  ImmutableCFOptions();
+ public:
+  static const char* kName() { return "ImmutableCFOptions"; }
+  explicit ImmutableCFOptions();
   explicit ImmutableCFOptions(const Options& options);
 
   ImmutableCFOptions(const ImmutableDBOptions& db_options,
@@ -31,17 +33,19 @@ struct ImmutableCFOptions {
   CompactionPri compaction_pri;
 
   const Comparator* user_comparator;
-  InternalKeyComparator internal_comparator;
+  InternalKeyComparator internal_comparator;  // Only in Immutable
 
-  MergeOperator* merge_operator;
+  std::shared_ptr<MergeOperator> merge_operator;
 
   const CompactionFilter* compaction_filter;
 
-  CompactionFilterFactory* compaction_filter_factory;
+  std::shared_ptr<CompactionFilterFactory> compaction_filter_factory;
 
   int min_write_buffer_number_to_merge;
 
   int max_write_buffer_number_to_maintain;
+
+  int64_t max_write_buffer_size_to_maintain;
 
   bool inplace_update_support;
 
@@ -50,32 +54,36 @@ struct ImmutableCFOptions {
                                    Slice delta_value,
                                    std::string* merged_value);
 
-  Logger* info_log;
+  Logger* logger;  // ImmutableDBOptions
 
-  Statistics* statistics;
+  Statistics* stats;  // ImmutableDBOptions
 
-  RateLimiter* rate_limiter;
+  std::shared_ptr<RateLimiter> rate_limiter;  // ImmutableDBOptions
 
-  InfoLogLevel info_log_level;
+  InfoLogLevel info_log_level;  // ImmutableDBOptions
 
-  Env* env;
+  Env* env;  // ImmutableDBOptions
+
+  FileSystem* fs;  // ImmutableDBOptions
+
+  SystemClock* clock;  // ImmutableDBOptions
 
   // Allow the OS to mmap file for reading sst tables. Default: false
-  bool allow_mmap_reads;
+  bool allow_mmap_reads;  // ImmutableDBOptions
 
   // Allow the OS to mmap file for writing. Default: false
-  bool allow_mmap_writes;
+  bool allow_mmap_writes;  // ImmutableDBOptions
 
-  std::vector<DbPath> db_paths;
+  std::vector<DbPath> db_paths;  // ImmutableDBOptions
 
-  MemTableRepFactory* memtable_factory;
+  std::shared_ptr<MemTableRepFactory> memtable_factory;
 
-  TableFactory* table_factory;
+  std::shared_ptr<TableFactory> table_factory;
 
   Options::TablePropertiesCollectorFactories
       table_properties_collector_factories;
 
-  bool advise_random_on_open;
+  bool advise_random_on_open;  // ImmutableDBOptions
 
   // This options is required by PlainTableReader. May need to move it
   // to PlainTableOptions just like bloom_bits_per_key
@@ -83,21 +91,15 @@ struct ImmutableCFOptions {
 
   bool purge_redundant_kvs_while_flush;
 
-  bool use_fsync;
+  bool use_fsync;  // ImmutableDBOptions
 
   std::vector<CompressionType> compression_per_level;
 
-  CompressionType bottommost_compression;
-
-  CompressionOptions bottommost_compression_opts;
-
-  CompressionOptions compression_opts;
-
   bool level_compaction_dynamic_level_bytes;
 
-  Options::AccessHint access_hint_on_compaction_start;
+  Options::AccessHint access_hint_on_compaction_start;  // ImmutableDBOptions
 
-  bool new_table_reader_for_compaction_inputs;
+  bool new_table_reader_for_compaction_inputs;  // ImmutableDBOptions
 
   int num_levels;
 
@@ -105,28 +107,37 @@ struct ImmutableCFOptions {
 
   bool force_consistency_checks;
 
-  bool allow_ingest_behind;
+  bool allow_ingest_behind;  // ImmutableDBOptions
 
-  bool preserve_deletes;
+  bool preserve_deletes;  // ImmutableDBOptions
 
   // A vector of EventListeners which callback functions will be called
   // when specific RocksDB event happens.
-  std::vector<std::shared_ptr<EventListener>> listeners;
+  std::vector<std::shared_ptr<EventListener>> listeners;  // ImmutableDBOptions
 
-  std::shared_ptr<Cache> row_cache;
+  std::shared_ptr<Cache> row_cache;  // ImmutableDBOptions
 
-  uint32_t max_subcompactions;
-
-  const SliceTransform* memtable_insert_with_hint_prefix_extractor;
+  std::shared_ptr<const SliceTransform>
+      memtable_insert_with_hint_prefix_extractor;
 
   std::vector<DbPath> cf_paths;
 
   std::shared_ptr<ConcurrentTaskLimiter> compaction_thread_limiter;
 
+  std::shared_ptr<FileChecksumGenFactory>
+      file_checksum_gen_factory;  // ImmutableDBOptions
+
   std::shared_ptr<SstPartitionerFactory> sst_partitioner_factory;
+
+  bool allow_data_in_errors;  // ImmutableDBOptions
+
+  std::string db_host_id;  // ImmutableDBOptions
+
+  FileTypeSet checksum_handoff_file_types;  // ImmutableDBOptions
 };
 
 struct MutableCFOptions {
+  static const char* kName() { return "MutableCFOptions"; }
   explicit MutableCFOptions(const ColumnFamilyOptions& options)
       : write_buffer_size(options.write_buffer_size),
         max_write_buffer_number(options.max_write_buffer_number),
@@ -151,7 +162,6 @@ struct MutableCFOptions {
         target_file_size_base(options.target_file_size_base),
         target_file_size_multiplier(options.target_file_size_multiplier),
         max_bytes_for_level_base(options.max_bytes_for_level_base),
-        snap_refresh_nanos(options.snap_refresh_nanos),
         max_bytes_for_level_multiplier(options.max_bytes_for_level_multiplier),
         ttl(options.ttl),
         periodic_compaction_seconds(options.periodic_compaction_seconds),
@@ -159,12 +169,25 @@ struct MutableCFOptions {
             options.max_bytes_for_level_multiplier_additional),
         compaction_options_fifo(options.compaction_options_fifo),
         compaction_options_universal(options.compaction_options_universal),
+        enable_blob_files(options.enable_blob_files),
+        min_blob_size(options.min_blob_size),
+        blob_file_size(options.blob_file_size),
+        blob_compression_type(options.blob_compression_type),
+        enable_blob_garbage_collection(options.enable_blob_garbage_collection),
+        blob_garbage_collection_age_cutoff(
+            options.blob_garbage_collection_age_cutoff),
         max_sequential_skip_in_iterations(
             options.max_sequential_skip_in_iterations),
+        check_flush_compaction_key_order(
+            options.check_flush_compaction_key_order),
         paranoid_file_checks(options.paranoid_file_checks),
         report_bg_io_stats(options.report_bg_io_stats),
         compression(options.compression),
-        sample_for_compression(options.sample_for_compression) {
+        bottommost_compression(options.bottommost_compression),
+        compression_opts(options.compression_opts),
+        bottommost_compression_opts(options.bottommost_compression_opts),
+        sample_for_compression(
+            options.sample_for_compression) {  // TODO: is 0 fine here?
     RefreshDerivedOptions(options.num_levels, options.compaction_style);
   }
 
@@ -188,15 +211,22 @@ struct MutableCFOptions {
         target_file_size_base(0),
         target_file_size_multiplier(0),
         max_bytes_for_level_base(0),
-        snap_refresh_nanos(0),
         max_bytes_for_level_multiplier(0),
         ttl(0),
         periodic_compaction_seconds(0),
         compaction_options_fifo(),
+        enable_blob_files(false),
+        min_blob_size(0),
+        blob_file_size(0),
+        blob_compression_type(kNoCompression),
+        enable_blob_garbage_collection(false),
+        blob_garbage_collection_age_cutoff(0.0),
         max_sequential_skip_in_iterations(0),
+        check_flush_compaction_key_order(true),
         paranoid_file_checks(false),
         report_bg_io_stats(false),
         compression(Snappy_Supported() ? kSnappyCompression : kNoCompression),
+        bottommost_compression(kDisableCompressionOption),
         sample_for_compression(0) {}
 
   explicit MutableCFOptions(const Options& options);
@@ -240,7 +270,6 @@ struct MutableCFOptions {
   uint64_t target_file_size_base;
   int target_file_size_multiplier;
   uint64_t max_bytes_for_level_base;
-  uint64_t snap_refresh_nanos;
   double max_bytes_for_level_multiplier;
   uint64_t ttl;
   uint64_t periodic_compaction_seconds;
@@ -248,11 +277,24 @@ struct MutableCFOptions {
   CompactionOptionsFIFO compaction_options_fifo;
   CompactionOptionsUniversal compaction_options_universal;
 
+  // Blob file related options
+  bool enable_blob_files;
+  uint64_t min_blob_size;
+  uint64_t blob_file_size;
+  CompressionType blob_compression_type;
+  bool enable_blob_garbage_collection;
+  double blob_garbage_collection_age_cutoff;
+
   // Misc options
   uint64_t max_sequential_skip_in_iterations;
+  bool check_flush_compaction_key_order;
   bool paranoid_file_checks;
   bool report_bg_io_stats;
   CompressionType compression;
+  CompressionType bottommost_compression;
+  CompressionOptions compression_opts;
+  CompressionOptions bottommost_compression_opts;
+
   uint64_t sample_for_compression;
 
   // Derived options
@@ -266,4 +308,9 @@ uint64_t MultiplyCheckOverflow(uint64_t op1, double op2);
 uint64_t MaxFileSizeForLevel(const MutableCFOptions& cf_options,
     int level, CompactionStyle compaction_style, int base_level = 1,
     bool level_compaction_dynamic_level_bytes = false);
-}  // namespace rocksdb
+
+// Get the max size of an L0 file for which we will pin its meta-blocks when
+// `pin_l0_filter_and_index_blocks_in_cache` is set.
+size_t MaxFileSizeForL0MetaPin(const MutableCFOptions& cf_options);
+
+}  // namespace ROCKSDB_NAMESPACE

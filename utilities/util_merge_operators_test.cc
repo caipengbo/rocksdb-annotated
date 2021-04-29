@@ -7,7 +7,7 @@
 #include "test_util/testutil.h"
 #include "utilities/merge_operators.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class UtilMergeOperatorTest : public testing::Test {
  public:
@@ -23,8 +23,7 @@ class UtilMergeOperatorTest : public testing::Test {
     std::vector<Slice> operands_slice(operands.begin(), operands.end());
 
     const MergeOperator::MergeOperationInput merge_in(
-        key, MergeOperator::kValue, &existing_value_slice, operands_slice,
-        nullptr);
+        key, &existing_value_slice, operands_slice, nullptr);
     MergeOperator::MergeOperationOutput merge_out(result, result_operand);
     merge_operator_->FullMergeV2(merge_in, &merge_out);
 
@@ -41,8 +40,8 @@ class UtilMergeOperatorTest : public testing::Test {
 
     std::vector<Slice> operands_slice(operands.begin(), operands.end());
 
-    const MergeOperator::MergeOperationInput merge_in(
-        key, MergeOperator::kDeletion, nullptr, operands_slice, nullptr);
+    const MergeOperator::MergeOperationInput merge_in(key, nullptr,
+                                                      operands_slice, nullptr);
     MergeOperator::MergeOperationOutput merge_out(result, result_operand);
     merge_operator_->FullMergeV2(merge_in, &merge_out);
 
@@ -92,7 +91,7 @@ TEST_F(UtilMergeOperatorTest, MaxMergeOperator) {
   EXPECT_EQ("a", PartialMerge("a", ""));
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
