@@ -779,6 +779,7 @@ class VersionBuilder::Rep {
     assert(meta);
     assert(found_first_non_empty);
 
+    // 如果当前blob和SST有关联，说明当前blob中有有效数据
     if (!meta->GetLinkedSsts().empty()) {
       (*found_first_non_empty) = true;
     } else if (!(*found_first_non_empty) ||
@@ -796,11 +797,11 @@ class VersionBuilder::Rep {
     assert(vstorage);
 
     bool found_first_non_empty = false;
-
+    // Base version 的 blob 信息
     const auto& base_blob_files = base_vstorage_->GetBlobFiles();
     auto base_it = base_blob_files.begin();
     const auto base_it_end = base_blob_files.end();
-
+    // 变化的blob信息（edit中的）
     auto delta_it = blob_file_meta_deltas_.begin();
     const auto delta_it_end = blob_file_meta_deltas_.end();
 

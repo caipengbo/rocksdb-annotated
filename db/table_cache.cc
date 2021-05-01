@@ -178,7 +178,7 @@ Status TableCache::FindTable(const ReadOptions& ro,
     if (*handle != nullptr) {
       return Status::OK();
     }
-
+    // 读文件
     std::unique_ptr<TableReader> table_reader;
     Status s = GetTableReader(
         ro, file_options, internal_comparator, fd, false /* sequential mode */,

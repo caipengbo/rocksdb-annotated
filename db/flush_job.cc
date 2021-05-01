@@ -406,6 +406,7 @@ Status FlushJob::WriteLevel0Table() {
       IOStatus io_s;
       const std::string* const full_history_ts_low =
           (full_history_ts_low_.empty()) ? nullptr : &full_history_ts_low_;
+      // 不仅有写SST, 还有写Blob的逻辑    
       s = BuildTable(
           dbname_, versions_, db_options_, *cfd_->ioptions(),
           mutable_cf_options_, file_options_, cfd_->table_cache(), iter.get(),

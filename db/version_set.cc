@@ -1948,7 +1948,7 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
 
         PERF_COUNTER_BY_LEVEL_ADD(user_key_return_count, 1,
                                   fp.GetHitFileLevel());
-
+        // 取出来的值是BlobIndex, 则去对应的Blob中取内容
         if (is_blob_index) {
           if (do_merge && value) {
             constexpr uint64_t* bytes_read = nullptr;

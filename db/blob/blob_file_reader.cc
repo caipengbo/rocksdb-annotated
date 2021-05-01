@@ -266,6 +266,7 @@ BlobFileReader::BlobFileReader(
 
 BlobFileReader::~BlobFileReader() = default;
 
+// 获取大Value的值
 Status BlobFileReader::GetBlob(const ReadOptions& read_options,
                                const Slice& user_key, uint64_t offset,
                                uint64_t value_size,

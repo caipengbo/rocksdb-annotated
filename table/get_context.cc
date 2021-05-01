@@ -250,9 +250,11 @@ bool GetContext::SaveValue(const ParsedInternalKey& parsed_key,
           state_ = kUnexpectedBlobIndex;
           return false;
         }
+        // 此处指的是初始状态是kNotFound
         if (kNotFound == state_) {
           state_ = kFound;
           if (do_merge_) {
+            // 进到此处说明是 DB Get API的逻辑
             if (LIKELY(pinnable_val_ != nullptr)) {
               if (LIKELY(value_pinner != nullptr)) {
                 // If the backing resources for the value are provided, pin them
@@ -299,6 +301,7 @@ bool GetContext::SaveValue(const ParsedInternalKey& parsed_key,
             timestamp_->assign(ts.data(), ts.size());
           }
         }
+        // 为 is_blob_index_赋值，用于后续取Blob数据
         if (is_blob_index_ != nullptr) {
           *is_blob_index_ = (type == kTypeBlobIndex);
         }

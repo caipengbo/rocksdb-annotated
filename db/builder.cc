@@ -181,7 +181,7 @@ Status BuildTable(
                                   io_tracer, blob_callback, &blob_file_paths,
                                   blob_file_additions)
             : nullptr);
-
+    // 在 CompactionIterator 中创建Blob的逻辑（调用BlobFileBuilder）
     CompactionIterator c_iter(
         iter, internal_comparator.user_comparator(), &merge, kMaxSequenceNumber,
         &snapshots, earliest_write_conflict_snapshot, snapshot_checker, env,

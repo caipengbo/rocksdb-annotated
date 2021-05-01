@@ -196,7 +196,7 @@ class GetContext {
   // called as part of DB GetMergeOperands API. When it's false merge operators
   // are never merged.
   bool do_merge_;
-  bool* is_blob_index_;
+  bool* is_blob_index_;  // 在
   // Used for block cache tracing only. A tracing get id uniquely identifies a
   // Get or a MultiGet.
   const uint64_t tracing_get_id_;

@@ -22,7 +22,7 @@ class DBBlobBasicTest : public DBTestBase {
 TEST_F(DBBlobBasicTest, GetBlob) {
   Options options = GetDefaultOptions();
   options.enable_blob_files = true;
-  options.min_blob_size = 0;
+  options.min_blob_size = 0;  // 所有的value都存到blob中
 
   Reopen(options);
 
@@ -38,6 +38,7 @@ TEST_F(DBBlobBasicTest, GetBlob) {
   // Try again with no I/O allowed. The table and the necessary blocks should
   // already be in their respective caches; however, the blob itself can only be
   // read from the blob file, so the read should return Incomplete.
+  // 在BlobFileCache中缓存的是BlobFileReader，blob内容是没有缓存的
   ReadOptions read_options;
   read_options.read_tier = kBlockCacheTier;
 
