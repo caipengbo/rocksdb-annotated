@@ -58,7 +58,7 @@ void FileMetaData::UpdateBoundaries(const Slice& key, const Slice& value,
     if (blob_index.file_number() == kInvalidBlobFileNumber) {
       return;
     }
-
+    // 更新该SST文件的最老的blob
     if (oldest_blob_file_number == kInvalidBlobFileNumber ||
         oldest_blob_file_number > blob_index.file_number()) {
       oldest_blob_file_number = blob_index.file_number();

@@ -191,6 +191,7 @@ struct FileMetaData {
 
   // Used only in BlobDB. The file number of the oldest blob file this SST file
   // refers to. 0 is an invalid value; BlobDB numbers the files starting from 1.
+  // 该SST关联的blob
   uint64_t oldest_blob_file_number = kInvalidBlobFileNumber;
 
   // The file could be the compaction output from other SST files, which could
@@ -412,6 +413,7 @@ class VersionEdit {
   const NewFiles& GetNewFiles() const { return new_files_; }
 
   // Add a new blob file.
+  // 隐式的构造成BlobFileAddition
   void AddBlobFile(uint64_t blob_file_number, uint64_t total_blob_count,
                    uint64_t total_blob_bytes, std::string checksum_method,
                    std::string checksum_value) {
@@ -437,6 +439,7 @@ class VersionEdit {
 
   // Add garbage for an existing blob file.  Note: intentionally broken English
   // follows.
+  // 隐式的构造成BlobFileGarbage
   void AddBlobFileGarbage(uint64_t blob_file_number,
                           uint64_t garbage_blob_count,
                           uint64_t garbage_blob_bytes) {

@@ -186,9 +186,13 @@ class CompactionIterator {
   // inlined in the LSM tree depending on the current settings (i.e.
   // enable_blob_files and min_blob_size). Should only be called for blob
   // references (kTypeBlobIndex).
+  // 如果启用了垃圾收集，则重新定位驻留在最旧的blob文件(all_blob_files × cutoff)中的有效blob
+  // 根据当前设置(即enable_blob_files和min_blob_size)
+  // 重新定位的blob被写入新的blob文件或内联在LSM树中
   //
   // Note: the stacked BlobDB implementation's compaction filter based GC
   // algorithm is also called from here.
+  // 对旧的Blob文件中所有有效的数据都执行了该操作后，那么这个Blob文件中就没有有用的信息了
   void GarbageCollectBlobIfNeeded();
 
   // Invoke compaction filter if needed.

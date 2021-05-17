@@ -167,7 +167,7 @@ Status MergeHelper::MergeUntil(InternalIterator* iter,
     } else if (first_key) {
       assert(user_comparator_->Equal(ikey.user_key, orig_ikey.user_key));
       first_key = false;
-    } else if (!user_comparator_->Equal(ikey.user_key, orig_ikey.user_key)) {
+    } else if (!user_comparator_->Equal(ikey.user_key, orig_ikey.user_key)) {  // 归并过程，如果是不相同的key,那么就不能归并
       // hit a different user key, stop right here
       hit_the_next_user_key = true;
       break;
@@ -229,7 +229,6 @@ Status MergeHelper::MergeUntil(InternalIterator* iter,
         keys_.emplace_front(std::move(original_key));
         merge_context_.PushOperand(merge_result);
       }
-
       // move iter to the next entry
       iter->Next();
       return s;

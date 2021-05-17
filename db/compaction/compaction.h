@@ -66,6 +66,7 @@ class ColumnFamilyData;
 class VersionStorageInfo;
 class CompactionFilter;
 
+// 对于Compaction的封装
 // A Compaction encapsulates metadata about a compaction.
 class Compaction {
  public:

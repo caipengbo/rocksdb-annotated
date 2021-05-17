@@ -987,7 +987,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
                                 Env::IOPriority::IO_LOW, write_hint_,
                                 io_tracer_, blob_callback_, &blob_file_paths,
                                 &sub_compact->blob_file_additions)
-          : nullptr);
+          : nullptr);  // 如果未开启enable_blob_files开关，那么将不会创建BlobFileBuilder对象
 
   TEST_SYNC_POINT("CompactionJob::Run():Inprogress");
   TEST_SYNC_POINT_CALLBACK(
@@ -1068,6 +1068,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     sub_compact->current_output_file_size =
         sub_compact->builder->EstimatedFileSize();
     const ParsedInternalKey& ikey = c_iter->ikey();
+    // 更新边界
     sub_compact->current_output()->meta.UpdateBoundaries(
         key, value, ikey.sequence, ikey.type);
     sub_compact->num_output_records++;
@@ -1270,7 +1271,7 @@ void CompactionJob::RecordDroppedKeys(
                c_iter_stats.num_optimized_del_drop_obsolete);
   }
 }
-
+// 产生输出的（物理）文件
 Status CompactionJob::FinishCompactionOutputFile(
     const Status& input_status, SubcompactionState* sub_compact,
     CompactionRangeDelAggregator* range_del_agg,

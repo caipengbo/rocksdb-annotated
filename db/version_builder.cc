@@ -443,6 +443,7 @@ class VersionBuilder::Rep {
     VersionSet* const vs = version_set_;
     const ImmutableCFOptions* const ioptions = ioptions_;
 
+    // 删除器，当 BlobFileMetaData中的shared_ptr 销毁的时候会执行此删除器函数
     auto deleter = [vs, ioptions](SharedBlobFileMetaData* shared_meta) {
       if (vs) {
         assert(ioptions);
@@ -500,7 +501,7 @@ class VersionBuilder::Rep {
     assert(level < num_levels_);
 
     const auto& added_files = levels_[level].added_files;
-
+    // 如果 SST文件是新添加的，那么从added_files中找到FileMetaData
     auto it = added_files.find(file_number);
     if (it != added_files.end()) {
       const FileMetaData* const meta = it->second;
@@ -508,7 +509,8 @@ class VersionBuilder::Rep {
 
       return meta->oldest_blob_file_number;
     }
-
+    // 如果不是新添加的SST，说明是旧的SST，是从base version中来的
+    // 从base version 中获取FileMetaData
     assert(base_vstorage_);
     const FileMetaData* const meta =
         base_vstorage_->GetFileMetaDataByNumber(file_number);
@@ -640,10 +642,12 @@ class VersionBuilder::Rep {
     assert(add_files.find(file_number) == add_files.end());
     add_files.emplace(file_number, f);
 
+    // TODO(疑问?)当前f对应的最老的 blob file ?
     const uint64_t blob_file_number = f->oldest_blob_file_number;
 
     if (blob_file_number != kInvalidBlobFileNumber &&
         IsBlobFileInVersion(blob_file_number)) {
+          // ????
       blob_file_meta_deltas_[blob_file_number].LinkSst(file_number);
     }
 
@@ -726,7 +730,7 @@ class VersionBuilder::Rep {
 
     return result;
   }
-
+  
   static std::shared_ptr<BlobFileMetaData> CreateMetaDataForNewBlobFile(
       const BlobFileMetaDataDelta& delta) {
     auto shared_meta = delta.GetSharedMeta();
@@ -740,7 +744,7 @@ class VersionBuilder::Rep {
 
     return meta;
   }
-
+  
   static std::shared_ptr<BlobFileMetaData>
   GetOrCreateMetaDataForExistingBlobFile(
       const std::shared_ptr<BlobFileMetaData>& base_meta,
@@ -786,7 +790,9 @@ class VersionBuilder::Rep {
                meta->GetGarbageBlobCount() >= meta->GetTotalBlobCount()) {
       return;
     }
-
+    // 若没有有效数据，则当前vstorage会跳过添加Blob文件
+    // 进而该Blob文件就不会传递到下一个Version中，当没有Version引用BlobFileMetaData的时候
+    // 该BlobFileMetaDat就会被销毁
     vstorage->AddBlobFile(meta);
   }
 
@@ -801,7 +807,7 @@ class VersionBuilder::Rep {
     const auto& base_blob_files = base_vstorage_->GetBlobFiles();
     auto base_it = base_blob_files.begin();
     const auto base_it_end = base_blob_files.end();
-    // 变化的blob信息（edit中的）
+    // 变化的关于blob信息（edit中的）
     auto delta_it = blob_file_meta_deltas_.begin();
     const auto delta_it_end = blob_file_meta_deltas_.end();
 
@@ -817,7 +823,7 @@ class VersionBuilder::Rep {
         ++base_it;
       } else if (delta_blob_file_number < base_blob_file_number) {
         const auto& delta = delta_it->second;
-
+        // 根据 BlobFileMetaDataDelta 创建BlobFileMetaData
         auto meta = CreateMetaDataForNewBlobFile(delta);
 
         AddBlobFileIfNeeded(vstorage, meta, &found_first_non_empty);

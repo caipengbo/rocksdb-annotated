@@ -21,7 +21,8 @@ namespace ROCKSDB_NAMESPACE {
 // file (shared across all versions that include the blob file in question);
 // hence, the type is neither copyable nor movable. A blob file can be marked
 // obsolete when the corresponding SharedBlobFileMetaData object is destroyed.
-
+// 每一个Blob文件都有一个这个对象（跨Version，不可移动和复制），当一个blob文件的SharedBlobFileMetaData
+// 被销毁了，那么这个blob文件也变成obsolete
 class SharedBlobFileMetaData {
  public:
   static std::shared_ptr<SharedBlobFileMetaData> Create(
@@ -88,7 +89,10 @@ std::ostream& operator<<(std::ostream& os,
 // SharedBlobFileMetaData, BlobFileMetaData are not copyable or movable. They
 // are meant to be jointly owned by the versions in which the blob file has the
 // same (immutable *and* mutable) state.
-
+// SharedBlobFileMetaData是对于当前blob文件各个Version都不会变的部分
+// BlobFileMetaData是各个Version间改变的部分:
+// 1. 关联的SST
+// 2. 产生的garbage
 class BlobFileMetaData {
  public:
   using LinkedSsts = std::unordered_set<uint64_t>;
@@ -154,7 +158,7 @@ class BlobFileMetaData {
   }
 
   std::shared_ptr<SharedBlobFileMetaData> shared_meta_;
-  LinkedSsts linked_ssts_;
+  LinkedSsts linked_ssts_;  // 和哪些blob关联
   uint64_t garbage_blob_count_;
   uint64_t garbage_blob_bytes_;
 };

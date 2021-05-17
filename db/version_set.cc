@@ -1808,7 +1808,7 @@ Status Version::GetBlob(const ReadOptions& read_options, const Slice& user_key,
 
   return GetBlob(read_options, user_key, blob_index, value, bytes_read);
 }
-
+// 根据blob_index获取Blob文件中的实际Value值（也叫blob）
 Status Version::GetBlob(const ReadOptions& read_options, const Slice& user_key,
                         const BlobIndex& blob_index, PinnableSlice* value,
                         uint64_t* bytes_read) const {
@@ -2793,6 +2793,7 @@ bool CompareCompensatedSizeDescending(const Fsize& first, const Fsize& second) {
 }
 } // anonymous namespace
 
+// 增加SST文件
 void VersionStorageInfo::AddFile(int level, FileMetaData* f) {
   auto& level_files = files_[level];
   level_files.push_back(f);

@@ -819,8 +819,10 @@ bool CompactionIterator::ExtractLargeValueIfNeededImpl() {
   }
 
   blob_index_.clear();
+  // blob_file_builder_->Add内部会判断min_blob_size，如果value大，则写入Blob，返回 blob_index_
   const Status s = blob_file_builder_->Add(user_key(), value_, &blob_index_);
 
+  // 说明写Blob失败，这是一个小value
   if (!s.ok()) {
     status_ = s;
     valid_ = false;
@@ -841,13 +843,13 @@ void CompactionIterator::ExtractLargeValueIfNeeded() {
   assert(ikey_.type == kTypeValue);
 
   if (!ExtractLargeValueIfNeededImpl()) {
-    return;
+    return;  // 不是大Value
   }
 
   ikey_.type = kTypeBlobIndex;
   current_key_.UpdateInternalKey(ikey_.sequence, ikey_.type);
 }
-
+// 对于每一个类型为kTypeBlobIndex的Key进行的操作
 void CompactionIterator::GarbageCollectBlobIfNeeded() {
   assert(ikey_.type == kTypeBlobIndex);
 
@@ -888,6 +890,7 @@ void CompactionIterator::GarbageCollectBlobIfNeeded() {
     uint64_t bytes_read = 0;
 
     {
+      // 获取blob文件上大Value的实际值
       const Status s = version->GetBlob(ReadOptions(), user_key(), blob_index,
                                         &blob_value_, &bytes_read);
 
@@ -904,10 +907,10 @@ void CompactionIterator::GarbageCollectBlobIfNeeded() {
 
     value_ = blob_value_;
 
+    // 计算value_的最新BlobIndex并且插入到新的Blob文件中
     if (ExtractLargeValueIfNeededImpl()) {
       return;
     }
-
     ikey_.type = kTypeValue;
     current_key_.UpdateInternalKey(ikey_.sequence, ikey_.type);
 
@@ -942,9 +945,10 @@ void CompactionIterator::GarbageCollectBlobIfNeeded() {
     }
   }
 }
-
+// 归并后的key, 输出到新的SST文件的 output
 void CompactionIterator::PrepareOutput() {
   if (valid_) {
+    // 当前会输出key对应的是value，看看是否为大Value，如果是，会插入到
     if (ikey_.type == kTypeValue) {
       ExtractLargeValueIfNeeded();
     } else if (ikey_.type == kTypeBlobIndex) {
@@ -1075,7 +1079,7 @@ bool CompactionIterator::IsInEarliestSnapshot(SequenceNumber sequence) {
   }
   return in_snapshot == SnapshotCheckerResult::kInSnapshot;
 }
-
+// 被CompactionIterator构造函数调用，计算CutoffFileNumber
 uint64_t CompactionIterator::ComputeBlobGarbageCollectionCutoffFileNumber(
     const CompactionProxy* compaction) {
   if (!compaction) {
@@ -1095,9 +1099,12 @@ uint64_t CompactionIterator::ComputeBlobGarbageCollectionCutoffFileNumber(
   const auto& blob_files = storage_info->GetBlobFiles();
 
   auto it = blob_files.begin();
+  // 将it前进到某一位置上
   std::advance(
       it, compaction->blob_garbage_collection_age_cutoff() * blob_files.size());
 
+  // using BlobFiles = std::map<uint64_t, std::shared_ptr<BlobFileMetaData>>;
+  // 获得BlobFiles.first, 也就是file_number
   return it != blob_files.end() ? it->first
                                 : std::numeric_limits<uint64_t>::max();
 }
