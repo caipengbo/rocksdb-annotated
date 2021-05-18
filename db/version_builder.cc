@@ -642,12 +642,16 @@ class VersionBuilder::Rep {
     assert(add_files.find(file_number) == add_files.end());
     add_files.emplace(file_number, f);
 
-    // TODO(疑问?)当前f对应的最老的 blob file ?
+    // 在FileMetaData::UpdateBoundaries的中会更新oldest_blob_file_number
+    // 仅在当前SST文件关联的最老的blob文件中记录SST，这样如果最老的blob非空，那么
+    // 当前SST关联的后续blob文件也非空
+    // 因为我们进行Compaction的时候，会遍历整个SST文件，那么整个SST文件的key都会
+    // 被涉及到，要么被丢弃，要么写到新的SST文件中，那么旧SST对应的blob文件也随之
+    // 改变，不会出现SST引用的最旧的blob文件中有有效数据，其余blob文件没有有效数据的现象
     const uint64_t blob_file_number = f->oldest_blob_file_number;
 
     if (blob_file_number != kInvalidBlobFileNumber &&
         IsBlobFileInVersion(blob_file_number)) {
-          // ????
       blob_file_meta_deltas_[blob_file_number].LinkSst(file_number);
     }
 
@@ -776,6 +780,9 @@ class VersionBuilder::Rep {
   // of garbage in the file, and whether the file or any lower-numbered blob
   // files have any linked SSTs. The latter condition is tracked using the
   // flag *found_first_non_empty.
+  // 此处的meta是经过 base 和 delta 组合而成的meta，所以有了delta中的linked SST信息
+  // found_first_non_empty的作用，当发现最老的blob文件非空（纯垃圾）的时候，后续的
+  // blob文件都将添加进VersionStorageInfo中
   void AddBlobFileIfNeeded(VersionStorageInfo* vstorage,
                            const std::shared_ptr<BlobFileMetaData>& meta,
                            bool* found_first_non_empty) const {
@@ -788,6 +795,7 @@ class VersionBuilder::Rep {
       (*found_first_non_empty) = true;
     } else if (!(*found_first_non_empty) ||
                meta->GetGarbageBlobCount() >= meta->GetTotalBlobCount()) {
+      // found_first_non_empty == true说明oldest blob文件不是空的，那么认为后续的blob文件也是非空的
       return;
     }
     // 若没有有效数据，则当前vstorage会跳过添加Blob文件
