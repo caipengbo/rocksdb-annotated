@@ -1062,6 +1062,7 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
 
   const bool maybe_flushed =
       level == 0 && file_size <= max_file_size_for_l0_meta_pin;
+  // 判断 pin 的逻辑
   std::function<bool(PinningTier, PinningTier)> is_pinned =
       [maybe_flushed, &is_pinned](PinningTier pinning_tier,
                                   PinningTier fallback_pinning_tier) {
@@ -1085,10 +1086,12 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
         assert(false);
         return false;
       };
+  // 是否 pin top level index
   const bool pin_top_level_index = is_pinned(
       table_options.metadata_cache_options.top_level_index_pinning,
       table_options.pin_top_level_index_and_filter ? PinningTier::kAll
                                                    : PinningTier::kNone);
+
   const bool pin_partition =
       is_pinned(table_options.metadata_cache_options.partition_pinning,
                 table_options.pin_l0_filter_and_index_blocks_in_cache
@@ -1100,6 +1103,7 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
                     ? PinningTier::kFlushedAndSimilar
                     : PinningTier::kNone);
 
+  // 是否 pin index
   // pin the first level of index
   const bool pin_index =
       index_type == BlockBasedTableOptions::kTwoLevelIndexSearch
@@ -1111,19 +1115,21 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
   const bool prefetch_index = prefetch_all || pin_index;
 
   std::unique_ptr<IndexReader> index_reader;
+  // 只会从 文件中读取 top level index!!!
   s = new_table->CreateIndexReader(ro, prefetch_buffer, meta_iter, use_cache,
                                    prefetch_index, pin_index, lookup_context,
                                    &index_reader);
   if (!s.ok()) {
     return s;
   }
-
+  // 保存到 Rep 中
   rep_->index_reader = std::move(index_reader);
 
   // The partitions of partitioned index are always stored in cache. They
   // are hence follow the configuration for pin and prefetch regardless of
   // the value of cache_index_and_filter_blocks
   if (prefetch_all || pin_partition) {
+    // 如果还缓存 partition index 的话！那么继续缓存 partition index
     s = rep_->index_reader->CacheDependencies(ro, pin_partition);
   }
   if (!s.ok()) {
@@ -1148,11 +1154,13 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
     if (filter) {
       // Refer to the comment above about paritioned indexes always being cached
       if (prefetch_all || pin_partition) {
+        // TODO(caipengbo): pin_partition 的是什么？
         s = filter->CacheDependencies(ro, pin_partition);
         if (!s.ok()) {
           return s;
         }
       }
+      // 保存到 Rep 中
       rep_->filter = std::move(filter);
     }
   }

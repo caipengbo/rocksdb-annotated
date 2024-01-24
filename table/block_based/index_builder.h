@@ -428,10 +428,12 @@ class PartitionedIndexBuilder : public IndexBuilder {
 
   void MakeNewSubIndexBuilder();
 
+  // sub(partitioned) index
   struct Entry {
     std::string key;
     std::unique_ptr<ShortenedIndexBuilder> value;
   };
+  // 记录所有 sub index
   std::list<Entry> entries_;  // list of partitioned indexes and their keys
   BlockBuilder index_block_builder_;              // top-level index builder
   BlockBuilder index_block_builder_without_seq_;  // same for user keys

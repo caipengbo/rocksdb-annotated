@@ -66,10 +66,12 @@ PartitionedFilterBlockBuilder::~PartitionedFilterBlockBuilder() {
   partitioned_filters_construction_status_.PermitUncheckedError();
 }
 
+// 切割 filter block
 void PartitionedFilterBlockBuilder::MaybeCutAFilterBlock(
     const Slice* next_key) {
   // Use == to send the request only once
   if (keys_added_to_partition_ == keys_per_partition_) {
+    // 告知 index_builder 需要切割
     // Currently only index builder is in charge of cutting a partition. We keep
     // requesting until it is granted.
     p_index_builder_->RequestPartitionCut();
@@ -93,6 +95,7 @@ void PartitionedFilterBlockBuilder::MaybeCutAFilterBlock(
   total_added_in_built_ += filter_bits_builder_->EstimateEntriesAdded();
   std::unique_ptr<const char[]> filter_data;
   Status filter_construction_status = Status::OK();
+  // 切割保存到 filters 中
   Slice filter =
       filter_bits_builder_->Finish(&filter_data, &filter_construction_status);
   if (filter_construction_status.ok()) {
@@ -135,6 +138,7 @@ Slice PartitionedFilterBlockBuilder::Finish(
         last_partition_block_handle.size() - last_encoded_handle_.size());
     last_encoded_handle_ = last_partition_block_handle;
     const Slice handle_delta_encoding_slice(handle_delta_encoding);
+    // 当前 filter block 完成，往 top level index 中添加一个条目
     index_on_filter_block_builder_.Add(last_filter_entry_key, handle_encoding,
                                        &handle_delta_encoding_slice);
     if (!p_index_builder_->seperator_is_key_plus_seq()) {
@@ -160,6 +164,7 @@ Slice PartitionedFilterBlockBuilder::Finish(
       // Simplest to just add them all at the end
       total_added_in_built_ = 0;
       if (p_index_builder_->seperator_is_key_plus_seq()) {
+        // filter block index 完成该 Block 的构建
         return index_on_filter_block_builder_.Finish();
       } else {
         return index_on_filter_block_builder_without_seq_.Finish();
@@ -198,6 +203,7 @@ std::unique_ptr<FilterBlockReader> PartitionedFilterBlockReader::Create(
   assert(table->get_rep());
   assert(!pin || prefetch);
 
+  // 注意此时读到的是 FilterPartitionIndex
   CachableEntry<Block_kFilterPartitionIndex> filter_block;
   if (prefetch || !use_cache) {
     const Status s = ReadFilterBlock(table, prefetch_buffer, ro, use_cache,
@@ -328,6 +334,8 @@ bool PartitionedFilterBlockReader::MayMatch(
     GetContext* get_context, BlockCacheLookupContext* lookup_context,
     Env::IOPriority rate_limiter_priority,
     FilterFunction filter_function) const {
+  // Block_kFilterPartitionIndex 是 partition index 的 top level
+  // 先读索引！
   CachableEntry<Block_kFilterPartitionIndex> filter_block;
   Status s = GetOrReadFilterBlock(no_io, get_context, lookup_context,
                                   &filter_block, rate_limiter_priority);
@@ -340,11 +348,12 @@ bool PartitionedFilterBlockReader::MayMatch(
     return true;
   }
 
+  // 读某一个 partitioned filter block
   auto filter_handle = GetFilterPartitionHandle(filter_block, *const_ikey_ptr);
   if (UNLIKELY(filter_handle.size() == 0)) {  // key is out of range
     return false;
   }
-
+  // 再读 full filter block
   CachableEntry<ParsedFullFilterBlock> filter_partition_block;
   s = GetFilterPartitionBlock(nullptr /* prefetch_buffer */, filter_handle,
                               no_io, get_context, lookup_context,

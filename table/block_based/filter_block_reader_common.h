@@ -68,6 +68,7 @@ class FilterBlockReaderCommon : public FilterBlockReader {
 
  private:
   const BlockBasedTable* table_;
+  // 被 pin 的 filter index
   CachableEntry<TBlocklike> filter_block_;
   size_t prefix_extractor_full_length_ = 0;
   bool full_length_enabled_ = false;

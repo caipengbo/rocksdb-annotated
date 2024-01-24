@@ -85,6 +85,7 @@ class PartitionedFilterBlockBuilder : public FullFilterBlockBuilder {
       false;  // true if Finish is called once but not complete yet.
   // The policy of when cut a filter block and Finish it
   void MaybeCutAFilterBlock(const Slice* next_key);
+  // index builder 负责切割
   // Currently we keep the same number of partitions for filters and indexes.
   // This would allow for some potentioal optimizations in future. If such
   // optimizations did not realize we can use different number of partitions and

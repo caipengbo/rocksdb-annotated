@@ -25,6 +25,7 @@ Status BlockBasedTable::IndexReaderCommon::ReadIndexBlock(
   const Rep* const rep = table->get_rep();
   assert(rep != nullptr);
 
+  // 注意此处传递的 index_handle 是 Block handle for (top-level) index block.
   const Status s = table->RetrieveBlock(
       prefetch_buffer, read_options, rep->footer.index_handle(),
       UncompressionDict::GetEmptyDict(), &index_block->As<Block_kIndex>(),

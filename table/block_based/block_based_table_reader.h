@@ -554,6 +554,7 @@ struct BlockBasedTable::Rep {
   // Footer contains the fixed table information
   Footer footer;
 
+  // Open 的时候创建这俩 reader, 详见 PrefetchIndexAndFilterBlocks
   std::unique_ptr<IndexReader> index_reader;
   std::unique_ptr<FilterBlockReader> filter;
   std::unique_ptr<UncompressionDictReader> uncompression_dict_reader;

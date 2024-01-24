@@ -163,10 +163,12 @@ Status TableCache::FindTable(
   PERF_TIMER_GUARD_WITH_CLOCK(find_table_nanos, ioptions_.clock);
   uint64_t number = file_meta.fd.GetNumber();
   Slice key = GetSliceForFileNumber(&number);
+  // 看该 SST 被缓存没（打开没有）
   *handle = cache_.Lookup(key);
   TEST_SYNC_POINT_CALLBACK("TableCache::FindTable:0",
                            const_cast<bool*>(&no_io));
 
+  // Open it!
   if (*handle == nullptr) {
     if (no_io) {
       return Status::Incomplete("Table not found in table_cache, no_io is set");
@@ -191,6 +193,7 @@ Status TableCache::FindTable(
       // We do not cache error results so that if the error is transient,
       // or somebody repairs the file, we recover automatically.
     } else {
+      // 将 table reader 缓存进去
       s = cache_.Insert(key, table_reader.get(), 1, handle);
       if (s.ok()) {
         // Release ownership of table reader.
@@ -428,6 +431,7 @@ Status TableCache::Get(
   TypedHandle* handle = nullptr;
   if (!done) {
     assert(s.ok());
+    // File 没有被打开过，则打开 Table，注意会 prefetch_index_and_filter_in_cache
     if (t == nullptr) {
       s = FindTable(options, file_options_, internal_comparator, file_meta,
                     &handle, prefix_extractor,
@@ -459,6 +463,7 @@ Status TableCache::Get(
     }
     if (s.ok()) {
       get_context->SetReplayLog(row_cache_entry);  // nullptr if no cache.
+      // 从 Table 中读
       s = t->Get(options, k, get_context, prefix_extractor.get(), skip_filters);
       get_context->SetReplayLog(nullptr);
     } else if (options.read_tier == kBlockCacheTier && s.IsIncomplete()) {

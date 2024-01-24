@@ -32,7 +32,7 @@ Status PartitionIndexReader::Create(
     if (!s.ok()) {
       return s;
     }
-
+    // 如果不 pin 的话，就会被 Reset，从而被释放资源！！
     if (use_cache && !pin) {
       index_block.Reset();
     }
@@ -134,6 +134,8 @@ Status PartitionIndexReader::CacheDependencies(const ReadOptions& ro,
       return s;
     }
   }
+
+  // 读取 (top level) index block 的内容
 
   // We don't return pinned data from index blocks, so no need
   // to set `block_contents_pinned`.

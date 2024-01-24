@@ -79,6 +79,8 @@ class BlockBasedTable::IndexReaderCommon : public BlockBasedTable::IndexReader {
 
  private:
   const BlockBasedTable* table_;
+  // 这是读取到的 top level index block, 会保存该CachableEntry，IndexReader不析构，
+  // 该 cache entry 就会一直持有！
   CachableEntry<Block> index_block_;
 };
 

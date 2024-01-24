@@ -1464,6 +1464,7 @@ void BlockBasedTableBuilder::WriteFilterBlock(
       // transferred filter data payload among different FilterBlockBuilder
       // subtypes.
       std::unique_ptr<const char[]> filter_data;
+      // filter
       Slice filter_content =
           rep_->filter_builder->Finish(filter_block_handle, &s, &filter_data);
 
@@ -1472,7 +1473,7 @@ void BlockBasedTableBuilder::WriteFilterBlock(
         rep_->SetStatus(s);
         break;
       }
-
+      // 所有 partitioned filter block 包括 filter partition index 和
       rep_->props.filter_size += filter_content.size();
 
       BlockType btype = is_partitioned_filter && /* last */ s.ok()
@@ -1532,10 +1533,12 @@ void BlockBasedTableBuilder::WriteIndexBlock(
   // If there are more index partitions, finish them and write them out
   if (index_builder_status.IsIncomplete()) {
     bool index_building_finished = false;
+    // index 如果 partitioned 的话 会返回 IsIncomplete 状态，此处会一直循环 Finish
     while (ok() && !index_building_finished) {
       Status s =
           rep_->index_builder->Finish(&index_blocks, *index_block_handle);
       if (s.ok()) {
+        // 等到了最后一个, 也就是 top level index 的时候，会置此处为 true
         index_building_finished = true;
       } else if (s.IsIncomplete()) {
         // More partitioned index after this one
@@ -1545,7 +1548,7 @@ void BlockBasedTableBuilder::WriteIndexBlock(
         rep_->SetStatus(s);
         return;
       }
-
+      // 注意，即使是最后一个 top level index, 它的 BlockType 也是 kIndex
       if (rep_->table_options.enable_index_compression) {
         WriteBlock(index_blocks.index_block_contents, index_block_handle,
                    BlockType::kIndex);

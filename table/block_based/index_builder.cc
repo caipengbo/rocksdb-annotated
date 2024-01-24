@@ -228,6 +228,8 @@ void PartitionedIndexBuilder::AddIndexEntry(
   }
 }
 
+// 构建 index block, 如果不是最后一个，就会返回 InComplete，外部会循环判断 Status
+// 等到没有 index block 了，就会返回 二级索引！！！
 Status PartitionedIndexBuilder::Finish(
     IndexBlocks* index_blocks, const BlockHandle& last_partition_block_handle) {
   if (partition_cnt_ == 0) {
@@ -254,6 +256,7 @@ Status PartitionedIndexBuilder::Finish(
     }
     entries_.pop_front();
   }
+  // 返回二级索引！
   // If there is no sub_index left, then return the 2nd level index.
   if (UNLIKELY(entries_.empty())) {
     if (seperator_is_key_plus_seq_) {
@@ -262,6 +265,7 @@ Status PartitionedIndexBuilder::Finish(
       index_blocks->index_block_contents =
           index_block_builder_without_seq_.Finish();
     }
+    // 也是一个 index block!
     top_level_index_size_ = index_blocks->index_block_contents.size();
     index_size_ += top_level_index_size_;
     return Status::OK();

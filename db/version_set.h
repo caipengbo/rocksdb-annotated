@@ -1057,6 +1057,7 @@ class Version {
   ColumnFamilyData* cfd_;  // ColumnFamilyData to which this Version belongs
   Logger* info_log_;
   Statistics* db_statistics_;
+  // 缓存 table reader
   TableCache* table_cache_;
   BlobSource* blob_source_;
   const MergeOperator* merge_operator_;
